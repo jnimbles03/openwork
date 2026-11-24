@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 
 import type { Logger } from "pino";
@@ -151,38 +152,83 @@ export type HealthHandlers = {
   sendMessage?: (input: SendMessageInput) => Promise<SendMessageResult>;
 };
 
+export const CONTROL_TOKEN_ENV = "OPENCODE_ROUTER_CONTROL_TOKEN";
+export const ALLOWED_HOSTS_ENV = "OPENCODE_ROUTER_ALLOWED_HOSTS";
+
+const LOOPBACK_HOSTNAMES = ["127.0.0.1", "localhost", "::1"];
+const WILDCARD_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+
+function normalizeHostname(value: string): string {
+  return value.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+}
+
+function hostnameFromHostHeader(header: string | undefined): string | null {
+  if (!header) return null;
+  try {
+    return normalizeHostname(new URL(`http://${header}`).hostname);
+  } catch {
+    return null;
+  }
+}
+
+function resolveAllowedHostnames(bindHost: string): Set<string> {
+  const allowed = new Set(LOOPBACK_HOSTNAMES);
+  const normalizedBind = normalizeHostname(bindHost);
+  if (normalizedBind && !WILDCARD_BIND_HOSTS.has(normalizedBind)) {
+    allowed.add(normalizedBind);
+  }
+  for (const entry of (process.env[ALLOWED_HOSTS_ENV] ?? "").split(",")) {
+    const normalized = normalizeHostname(entry);
+    if (normalized) allowed.add(normalized);
+  }
+  return allowed;
+}
+
+function digestToken(value: string): Buffer {
+  return createHash("sha256").update(value, "utf8").digest();
+}
+
+function bearerToken(header: string | string[] | undefined): string | null {
+  if (typeof header !== "string") return null;
+  const match = header.match(/^Bearer\s+(\S+)\s*$/i);
+  return match ? match[1] : null;
+}
+
 export async function startHealthServer(
   port: number,
   getStatus: () => HealthSnapshot,
   logger: Logger,
   handlers: HealthHandlers = {},
 ) {
+  const host = (process.env.OPENCODE_ROUTER_HEALTH_HOST ?? "").trim() || "127.0.0.1";
+  const allowedHostnames = resolveAllowedHostnames(host);
+  const controlToken = (process.env[CONTROL_TOKEN_ENV] ?? "").trim();
+  const controlTokenDigest = controlToken ? digestToken(controlToken) : null;
+  if (!controlTokenDigest) {
+    logger.warn(
+      { env: CONTROL_TOKEN_ENV },
+      "control API disabled: set a control token to enable identity, binding, config, and send routes",
+    );
+  }
+
+  const isAuthorized = (req: http.IncomingMessage) => {
+    if (!controlTokenDigest) return false;
+    const presented = bearerToken(req.headers.authorization);
+    if (!presented) return false;
+    return timingSafeEqual(digestToken(presented), controlTokenDigest);
+  };
+
   const server = http.createServer((req, res) => {
     void (async () => {
-      const requestOrigin = req.headers.origin;
-      if (requestOrigin) {
-        res.setHeader("Access-Control-Allow-Origin", requestOrigin);
-        res.setHeader("Vary", "Origin");
-      } else {
-        res.setHeader("Access-Control-Allow-Origin", "*");
-      }
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-
-      const requestHeaders = req.headers["access-control-request-headers"];
-      if (Array.isArray(requestHeaders)) {
-        res.setHeader("Access-Control-Allow-Headers", requestHeaders.join(", "));
-      } else if (typeof requestHeaders === "string" && requestHeaders.trim()) {
-        res.setHeader("Access-Control-Allow-Headers", requestHeaders);
-      } else {
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      }
-
-      if (req.headers["access-control-request-private-network"] === "true") {
-        res.setHeader("Access-Control-Allow-Private-Network", "true");
+      const requestHostname = hostnameFromHostHeader(req.headers.host);
+      if (!requestHostname || !allowedHostnames.has(requestHostname)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Host not allowed" }));
+        return;
       }
 
       if (req.method === "OPTIONS") {
-        res.writeHead(204);
+        res.writeHead(204, { Allow: "GET, POST, DELETE" });
         res.end();
         return;
       }
@@ -195,6 +241,17 @@ export async function startHealthServer(
           "Content-Type": "application/json",
         });
         res.end(JSON.stringify(snapshot));
+        return;
+      }
+
+      if (!isAuthorized(req)) {
+        if (!controlTokenDigest) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: `Control API is disabled; set ${CONTROL_TOKEN_ENV}` }));
+          return;
+        }
+        res.writeHead(401, { "Content-Type": "application/json", "WWW-Authenticate": "Bearer" });
+        res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
         return;
       }
 
@@ -659,8 +716,6 @@ export async function startHealthServer(
       res.end(JSON.stringify({ ok: false, error: "Internal error" }));
     });
   });
-
-  const host = (process.env.OPENCODE_ROUTER_HEALTH_HOST ?? "").trim() || "127.0.0.1";
 
   try {
     await new Promise<void>((resolve, reject) => {

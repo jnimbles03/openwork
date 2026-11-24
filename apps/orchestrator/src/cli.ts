@@ -1874,6 +1874,7 @@ const SANDBOX_INTERNAL_ENV_NAMES = [
   "OPENCODE_SERVER_PASSWORD",
   "OPENWORK_OPENCODE_USERNAME",
   "OPENWORK_OPENCODE_PASSWORD",
+  "OPENCODE_ROUTER_CONTROL_TOKEN",
 ] as const;
 
 function sandboxEnvPassThroughNames(userEnv: Record<string, string>): string[] {
@@ -3204,9 +3205,13 @@ function opencodeRouterSendToolSource(): string {
     "      ...(peerId ? { peerId } : {}),",
     "      ...(args.autoBind === true ? { autoBind: true } : {}),",
     "    }",
+    '    const controlToken = (process.env.OPENCODE_ROUTER_CONTROL_TOKEN || "").trim()',
     "    const response = await fetch(`http://127.0.0.1:${port}/send`, {",
     '      method: "POST",',
-    '      headers: { "Content-Type": "application/json" },',
+    "      headers: {",
+    '        "Content-Type": "application/json",',
+    "        ...(controlToken ? { Authorization: `Bearer ${controlToken}` } : {}),",
+    "      },",
     "      body: JSON.stringify(payload),",
     "    })",
     "    const body = await response.text()",
@@ -3284,8 +3289,11 @@ function opencodeRouterStatusToolSource(): string {
     "    const targetValid = channel !== 'telegram' || !peerId || isNumericTelegramPeerId(peerId)",
     "    const includeBindings = args.includeBindings === true",
     "",
+    '    const controlToken = (process.env.OPENCODE_ROUTER_CONTROL_TOKEN || "").trim()',
     "    const fetchJson = async (path) => {",
-    "      const response = await fetch(`http://127.0.0.1:${port}${path}`)",
+    "      const response = await fetch(`http://127.0.0.1:${port}${path}`, {",
+    "        headers: controlToken ? { Authorization: `Bearer ${controlToken}` } : {},",
+    "      })",
     "      const body = await response.text()",
     "      let json = null",
     "      try {",
@@ -4288,6 +4296,9 @@ async function writeSandboxEntrypoint(options: {
       : "",
     options.openwork.opencodePassword
       ? ': "${OPENWORK_OPENCODE_PASSWORD:?OPENWORK_OPENCODE_PASSWORD is required}"'
+      : "",
+    options.openwork.opencodeRouterEnabled
+      ? ': "${OPENCODE_ROUTER_CONTROL_TOKEN:?OPENCODE_ROUTER_CONTROL_TOKEN is required}"'
       : "",
   ]
     .filter(Boolean)
@@ -7039,6 +7050,11 @@ async function runStart(args: ParsedArgs) {
     readFlag(args.flags, "openwork-host-token") ??
     process.env.OPENWORK_HOST_TOKEN ??
     randomUUID();
+  // Sidecars inherit process.env, so the router, the OpenCode tools that call it,
+  // and the sandbox container all receive the same per-run control token.
+  process.env.OPENCODE_ROUTER_CONTROL_TOKEN =
+    process.env.OPENCODE_ROUTER_CONTROL_TOKEN?.trim() ||
+    randomBytes(32).toString("hex");
   const approvalMode =
     (readFlag(args.flags, "approval") as ApprovalMode | undefined) ??
     (process.env.OPENWORK_APPROVAL_MODE as ApprovalMode | undefined) ??

@@ -171,7 +171,11 @@ export function createRouterProductService(input: {
     }
     const response = await fetch(`${health.baseUrl.replace(/\/+$/, "")}${pathname}`, {
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${input.runtime.getRouterControlToken()}`,
+        "Content-Type": "application/json",
+      },
       method: init?.method ?? "GET",
     });
     const text = await response.text();
