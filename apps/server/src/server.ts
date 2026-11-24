@@ -157,29 +157,102 @@ function parseWorkspaceMount(pathname: string): { workspaceId: string; restPath:
   return { workspaceId: decodeURIComponent(workspaceId), restPath };
 }
 
-function normalizeOpencodeProxyPath(proxyPath: string): string {
-  const raw = (proxyPath ?? "").trim() || "/";
-  const withoutPrefix = raw.startsWith("/opencode") ? raw.slice("/opencode".length) : raw;
-  const normalized = (withoutPrefix || "/").replace(/\/+$/, "");
-  return normalized || "/";
+interface OpencodeProxyTarget {
+  path: string;
+  body: BodyInit | null | undefined;
 }
 
-function assertOpencodeProxyAllowed(actor: Actor, method: string, proxyPath: string) {
-  const m = method.toUpperCase();
-  const scope = actor.scope ?? "viewer";
+const PATH_SAFE_ESCAPES = /%(24|26|2B|2C|3A|3B|3D|40)/g;
 
-  if (scope === "viewer" && m !== "GET" && m !== "HEAD") {
+function decodeOpencodeProxySegments(proxyPath: string): string[] {
+  const raw = proxyPath.startsWith("/opencode") ? proxyPath.slice("/opencode".length) : proxyPath;
+  const segments: string[] = [];
+  for (const part of raw.split("/")) {
+    if (!part) continue;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(part);
+    } catch {
+      throw new ApiError(400, "invalid_path", "Malformed OpenCode proxy path");
+    }
+    if (decoded === "." || decoded === "..") {
+      throw new ApiError(400, "invalid_path", "Malformed OpenCode proxy path");
+    }
+    segments.push(decoded);
+  }
+  return segments;
+}
+
+function encodeOpencodeProxyPath(segments: string[]): string {
+  const encoded = segments.map((segment) =>
+    encodeURIComponent(segment).replace(PATH_SAFE_ESCAPES, (_, hex: string) => String.fromCharCode(parseInt(hex, 16))),
+  );
+  return `/${encoded.join("/")}`;
+}
+
+// Session fields through which OpenCode writes the session permission ruleset:
+// `permission` on session create/update, and the deprecated prompt `tools` map,
+// which replaces the session ruleset with allow/deny rules.
+function sessionPermissionField(route: string[]): string | null {
+  if (route[0] !== "session") return null;
+  if (route.length <= 2) return "permission";
+  if (route.length === 3 && (route[2] === "message" || route[2] === "prompt_async")) return "tools";
+  return null;
+}
+
+function jsonBodyHasField(bytes: Uint8Array, field: string): boolean {
+  const text = new TextDecoder().decode(bytes);
+  if (!text.trim()) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ApiError(400, "invalid_json", "Request body must be valid JSON");
+  }
+  return typeof parsed === "object" && parsed !== null && Object.prototype.hasOwnProperty.call(parsed, field);
+}
+
+/**
+ * Authorizes a proxied OpenCode request and returns the exact path and body to
+ * forward. The path is decoded and re-encoded once so the route checked here is
+ * the route OpenCode resolves, regardless of percent-encoding or empty segments.
+ */
+async function authorizeOpencodeProxyRequest(
+  actor: Actor,
+  request: Request,
+  proxyPath: string,
+): Promise<OpencodeProxyTarget> {
+  const method = request.method.toUpperCase();
+  const scope = actor.scope ?? "viewer";
+  const segments = decodeOpencodeProxySegments(proxyPath);
+  const path = encodeOpencodeProxyPath(segments);
+
+  if (method === "GET" || method === "HEAD") {
+    return { path, body: undefined };
+  }
+  if (scope === "viewer") {
     throw new ApiError(403, "forbidden", "Viewer tokens are read-only");
   }
-
-  // Prevent collaborators/viewers from self-approving OpenCode permission requests via the proxy.
-  // OpenCode uses /permission/:requestId/reply (and historically also a session-scoped variant).
-  if (scope !== "owner" && m !== "GET" && m !== "HEAD") {
-    const normalized = normalizeOpencodeProxyPath(proxyPath);
-    if (/\/permission\/[^/]+\/reply$/.test(normalized)) {
-      throw new ApiError(403, "forbidden", "Only owner tokens can reply to permission requests");
-    }
+  if (scope === "owner") {
+    return { path, body: request.body };
   }
+
+  // OpenCode answers permission requests at /permission/:id/reply and at the
+  // legacy session-scoped /session/:id/permissions/:id.
+  const route = segments.map((segment) => segment.toLowerCase());
+  if (route[0] === "permission" || (route[0] === "session" && route[2] === "permissions")) {
+    throw new ApiError(403, "forbidden", "Only owner tokens can reply to permission requests");
+  }
+
+  const field = sessionPermissionField(route);
+  if (!field) {
+    return { path, body: request.body };
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (jsonBodyHasField(bytes, field)) {
+    throw new ApiError(403, "forbidden", "Only owner tokens can change session permissions");
+  }
+  return { path, body: bytes };
 }
 
 interface Route {
@@ -255,11 +328,11 @@ export function startServer(config: ServerConfig) {
         authMode = "client";
         try {
           const actor = await requireClient(request, config, tokens);
-          assertOpencodeProxyAllowed(actor, request.method, mount.restPath);
+          const target = await authorizeOpencodeProxyRequest(actor, request, mount.restPath);
           const workspace = await resolveWorkspace(config, mount.workspaceId);
           proxyService = "opencode";
           proxyBaseUrl = workspace.baseUrl?.trim() || undefined;
-          const response = await proxyOpencodeRequest({ config, request, url, workspace, proxyPath: mount.restPath });
+          const response = await proxyOpencodeRequest({ config, request, url, workspace, target });
           return finalize(response);
         } catch (error) {
           const apiError = error instanceof ApiError
@@ -292,9 +365,9 @@ export function startServer(config: ServerConfig) {
         proxyBaseUrl = config.workspaces[0]?.baseUrl?.trim() || undefined;
         try {
           const actor = await requireClient(request, config, tokens);
-          assertOpencodeProxyAllowed(actor, request.method, url.pathname);
+          const target = await authorizeOpencodeProxyRequest(actor, request, url.pathname);
           proxyService = "opencode";
-          const response = await proxyOpencodeRequest({ config, request, url, workspace: config.workspaces[0] });
+          const response = await proxyOpencodeRequest({ config, request, url, workspace: config.workspaces[0], target });
           return finalize(response);
         } catch (error) {
           const apiError = error instanceof ApiError
@@ -382,8 +455,7 @@ function pathToRegex(path: string, keys: string[]): RegExp {
 
 function buildOpencodeProxyUrl(baseUrl: string, path: string, search: string) {
   const target = new URL(baseUrl);
-  const trimmedPath = path.replace(/^\/opencode/, "");
-  target.pathname = trimmedPath.startsWith("/") ? trimmedPath : `/${trimmedPath}`;
+  target.pathname = path;
   target.search = search;
   return target.toString();
 }
@@ -460,7 +532,7 @@ async function proxyOpencodeRequest(input: {
   request: Request;
   url: URL;
   workspace?: WorkspaceInfo;
-  proxyPath?: string;
+  target: OpencodeProxyTarget;
 }) {
   const workspace = input.workspace;
   const baseUrl = workspace ? resolveWorkspaceOpencodeConnection(input.config, workspace).baseUrl?.trim() ?? "" : "";
@@ -468,8 +540,7 @@ async function proxyOpencodeRequest(input: {
     throw new ApiError(400, "opencode_unconfigured", "OpenCode base URL is missing for this workspace");
   }
 
-  const proxyPath = input.proxyPath ?? input.url.pathname;
-  const targetUrl = buildOpencodeProxyUrl(baseUrl, proxyPath, input.url.search);
+  const targetUrl = buildOpencodeProxyUrl(baseUrl, input.target.path, input.url.search);
   const headers = new Headers(input.request.headers);
   headers.delete("authorization");
   headers.delete("x-openwork-host-token");
@@ -488,11 +559,10 @@ async function proxyOpencodeRequest(input: {
   }
 
   const method = input.request.method.toUpperCase();
-  const body = method === "GET" || method === "HEAD" ? undefined : input.request.body;
   const response = await fetch(targetUrl, {
     method,
     headers,
-    body,
+    body: input.target.body,
   });
 
   return sanitizeProxyResponse(response);
