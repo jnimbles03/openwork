@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -90,6 +91,7 @@ export type RuntimeService = {
     status: RuntimeChildStatus;
     version: string | null;
   };
+  getRouterControlToken(): string;
   getRouterHealth(): {
     baseUrl: string | null;
     binaryPath: string | null;
@@ -432,6 +434,7 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
   const startupDiagnostics = asRecord(asRecord(persisted?.health).startup);
   const opencodeState = createInitialChildState(bootstrapPolicy === "disabled" ? "disabled" : "stopped", persisted?.opencodeVersion ?? null);
   const routerState = createInitialChildState(persisted?.routerStatus === "running" ? "stopped" : "disabled", persisted?.routerVersion ?? null);
+  const routerControlToken = randomBytes(32).toString("hex");
 
   let runtimeManifest: RuntimeManifest | null = null;
   let routerMaterialization: RouterMaterialization | null = null;
@@ -768,6 +771,7 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
           env: {
             OPENCODE_DIRECTORY: options.workingDirectory.rootDir,
             OPENCODE_ROUTER_CONFIG_PATH: routerMaterialization?.configPath,
+            OPENCODE_ROUTER_CONTROL_TOKEN: routerControlToken,
             OPENCODE_ROUTER_DATA_DIR: routerMaterialization?.dataDir,
             OPENCODE_ROUTER_DB_PATH: routerMaterialization?.dbPath,
             OPENCODE_ROUTER_HEALTH_PORT: String(healthPort),
@@ -1038,6 +1042,10 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
         status: opencodeState.status,
         version: opencodeState.version,
       };
+    },
+
+    getRouterControlToken() {
+      return routerControlToken;
     },
 
     getRouterHealth() {

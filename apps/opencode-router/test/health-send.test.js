@@ -8,6 +8,10 @@ import assert from "node:assert/strict";
 import { startBridge } from "../dist/bridge.js";
 import { BridgeStore } from "../dist/db.js";
 
+const CONTROL_TOKEN = "placeholder-control-token";
+const CONTROL_HEADERS = { "Content-Type": "application/json", Authorization: `Bearer ${CONTROL_TOKEN}` };
+process.env.OPENCODE_ROUTER_CONTROL_TOKEN = CONTROL_TOKEN;
+
 function createLoggerStub() {
   const base = {
     child() {
@@ -85,7 +89,7 @@ test("health /send delivers to directory bindings", async () => {
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({ channel: "slack", directory: dir, text: "hello" }),
   });
   assert.equal(response.status, 200);
@@ -140,7 +144,7 @@ test("health /send reports no-op when no bindings exist", async () => {
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({ channel: "slack", directory: dir, text: "hello" }),
   });
   assert.equal(response.status, 200);
@@ -207,7 +211,7 @@ test("health /send can deliver directly with peerId", async () => {
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({ channel: "slack", peerId: "D555", text: "hello-direct" }),
   });
   assert.equal(response.status, 200);
@@ -294,7 +298,7 @@ test("health /send can deliver file parts end-to-end", async () => {
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({
       channel: "slack",
       peerId: "D999",
@@ -353,7 +357,7 @@ test("health /send rejects invalid telegram direct peerId", async () => {
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({ channel: "telegram", peerId: "@hotkartoffel", text: "hello-direct" }),
   });
   assert.equal(response.status, 400);
@@ -422,7 +426,7 @@ test("health /send removes invalid telegram bindings and still sends valid ones"
 
   const response = await fetch(`http://127.0.0.1:${healthPort}/send`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: CONTROL_HEADERS,
     body: JSON.stringify({ channel: "telegram", directory: dir, text: "hello" }),
   });
   assert.equal(response.status, 200);
