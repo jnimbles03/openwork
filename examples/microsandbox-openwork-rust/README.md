@@ -17,8 +17,9 @@ Useful environment overrides:
 - `OPENWORK_MICROSANDBOX_REPLACE` - set to `1` or `true` to replace the sandbox instead of reusing persistent state. Defaults to off.
 - `OPENWORK_MICROSANDBOX_PORT` - published host port. Defaults to `8787`.
 - `OPENWORK_CONNECT_HOST` - hostname you want clients to use. Defaults to `127.0.0.1`.
-- `OPENWORK_TOKEN` - remote-connect client token. Defaults to `microsandbox-token`.
-- `OPENWORK_HOST_TOKEN` - host/admin token. Defaults to `microsandbox-host-token`.
+- `OPENWORK_TOKEN` - remote-connect client token. When unset, a random 256-bit token is generated for each run and printed once the sandbox is healthy.
+- `OPENWORK_HOST_TOKEN` - host/admin token. When unset, a random 256-bit token is generated for each run and printed once the sandbox is healthy. Must differ from `OPENWORK_TOKEN`.
+- `OPENWORK_APPROVAL_MODE` - `manual` or `auto`. When unset, the image default (`manual`) applies.
 
 Example:
 
@@ -27,8 +28,8 @@ OPENWORK_MICROSANDBOX_IMAGE=ghcr.io/example/openwork-microsandbox:dev \
 OPENWORK_MICROSANDBOX_WORKSPACE_DIR="$PWD/examples/microsandbox-openwork-rust/.state/demo/workspace" \
 OPENWORK_MICROSANDBOX_DATA_DIR="$PWD/examples/microsandbox-openwork-rust/.state/demo/data" \
 OPENWORK_CONNECT_HOST=127.0.0.1 \
-OPENWORK_TOKEN=some-shared-secret \
-OPENWORK_HOST_TOKEN=some-owner-secret \
+OPENWORK_TOKEN="$(openssl rand -hex 32)" \
+OPENWORK_HOST_TOKEN="$(openssl rand -hex 32)" \
 cargo run --manifest-path examples/microsandbox-openwork-rust/Cargo.toml
 ```
 
