@@ -138,6 +138,18 @@ Den Web reads those query params and then calls Den API to validate the signed s
 
 Do not point the Setup URL at Den API for this flow.
 
+### Callback URL (user authorization)
+
+The `installation_id` on the setup redirect can be spoofed, so Den API does not trust it on its own. Before it links an installation to an organization, Den API exchanges a GitHub user authorization `code` for a user access token and requires the installation to appear in `GET /user/installations` for that user.
+
+Set the GitHub App `Callback URL` to the same Den Web page:
+
+`https://<your-public-den-web-host>/dashboard/integrations/github`
+
+If `Request user authorization (OAuth) during installation` is enabled, GitHub sends the `code` with the install redirect. Otherwise Den Web sends the user through `https://github.com/login/oauth/authorize` once after installation, and GitHub returns to the Callback URL with `code` and `state`.
+
+This step needs `GITHUB_CONNECTOR_APP_CLIENT_ID` and `GITHUB_CONNECTOR_APP_CLIENT_SECRET`. Accounts connected before this check existed must be reconnected through the install flow before repositories can be listed or synced.
+
 ### Webhook URL
 
 This is where GitHub sends push/install webhook events.
