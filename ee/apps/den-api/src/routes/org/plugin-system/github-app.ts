@@ -71,13 +71,22 @@ export type GithubInstallationSummary = {
 
 export type GithubInstallStatePayload = {
   exp: number
+  installationId?: number
   nonce: string
   orgId: string
   returnPath: string
   userId: string
 }
 
+export type GithubConnectorOAuthConfig = {
+  clientId: string
+  clientSecret: string
+}
+
 const GITHUB_API_BASE = "https://api.github.com"
+const GITHUB_WEB_BASE = "https://github.com"
+const GITHUB_USER_INSTALLATIONS_PAGE_SIZE = 100
+const GITHUB_USER_INSTALLATIONS_MAX_PAGES = 20
 const GITHUB_API_VERSION = "2022-11-28"
 
 function base64UrlEncode(value: unknown) {
@@ -120,6 +129,21 @@ export function getGithubConnectorAppConfig(input: { appId?: string; privateKey?
   } satisfies GithubConnectorAppConfig
 }
 
+export function getGithubConnectorOAuthConfig(input: { clientId?: string; clientSecret?: string }) {
+  const clientId = input.clientId?.trim()
+  const clientSecret = input.clientSecret?.trim()
+
+  if (!clientId) {
+    throw new GithubConnectorConfigError("GITHUB_CONNECTOR_APP_CLIENT_ID is required to verify GitHub installations.")
+  }
+
+  if (!clientSecret) {
+    throw new GithubConnectorConfigError("GITHUB_CONNECTOR_APP_CLIENT_SECRET is required to verify GitHub installations.")
+  }
+
+  return { clientId, clientSecret } satisfies GithubConnectorOAuthConfig
+}
+
 function base64UrlDecode(value: string) {
   return Buffer.from(value, "base64url")
 }
@@ -128,7 +152,12 @@ function isSafeRelativeReturnPath(value: string) {
   return value.startsWith("/") && !value.startsWith("//")
 }
 
+function isGithubInstallationId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+}
+
 export function createGithubInstallStateToken(input: {
+  installationId?: number
   now?: Date | number
   orgId: string
   returnPath: string
@@ -141,9 +170,13 @@ export function createGithubInstallStateToken(input: {
   if (!isSafeRelativeReturnPath(returnPath)) {
     throw new GithubConnectorConfigError("GitHub install return path must be a safe relative path.")
   }
+  if (input.installationId !== undefined && !isGithubInstallationId(input.installationId)) {
+    throw new GithubConnectorConfigError("GitHub install state installation id must be a positive integer.")
+  }
 
   const payload: GithubInstallStatePayload = {
     exp: Math.floor(nowMs / 1000) + (input.ttlSeconds ?? 10 * 60),
+    ...(input.installationId !== undefined ? { installationId: input.installationId } : {}),
     nonce: randomUUID(),
     orgId: input.orgId,
     returnPath,
@@ -179,6 +212,7 @@ export function verifyGithubInstallStateToken(input: { now?: Date | number; secr
       || typeof payload.userId !== "string"
       || payload.exp < nowSeconds
       || !isSafeRelativeReturnPath(payload.returnPath)
+      || (payload.installationId !== undefined && !isGithubInstallationId(payload.installationId))
     ) {
       return null
     }
@@ -266,6 +300,70 @@ export function buildGithubAppInstallUrl(input: { app: GithubAppSummary; state: 
   const url = new URL(`${input.app.htmlUrl.replace(/\/+$/, "")}/installations/new`)
   url.searchParams.set("state", input.state)
   return url.toString()
+}
+
+export function buildGithubUserAuthorizeUrl(input: { clientId: string; state: string }) {
+  const url = new URL(`${GITHUB_WEB_BASE}/login/oauth/authorize`)
+  url.searchParams.set("client_id", input.clientId)
+  url.searchParams.set("state", input.state)
+  return url.toString()
+}
+
+export async function exchangeGithubUserAuthorizationCode(input: { code: string; config: GithubConnectorOAuthConfig; fetchFn?: GithubFetch }) {
+  const fetchFn = input.fetchFn ?? fetch
+  const response = await fetchFn(`${GITHUB_WEB_BASE}/login/oauth/access_token`, {
+    body: JSON.stringify({
+      client_id: input.config.clientId,
+      client_secret: input.config.clientSecret,
+      code: input.code,
+    }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "openwork-den-api",
+    },
+    method: "POST",
+  })
+
+  const text = await response.text()
+  let body: unknown = null
+  try {
+    body = text ? JSON.parse(text) as unknown : null
+  } catch {
+    body = null
+  }
+
+  // GitHub reports a rejected code with HTTP 200 and an `error` field instead of a token.
+  const token = body && typeof body === "object" && typeof (body as Record<string, unknown>).access_token === "string"
+    ? (body as Record<string, unknown>).access_token as string
+    : null
+  if (!response.ok || !token) {
+    throw new GithubConnectorRequestError("GitHub did not accept the user authorization code.", response.ok ? 401 : response.status)
+  }
+
+  return token
+}
+
+export async function githubUserCanAccessInstallation(input: { fetchFn?: GithubFetch; installationId: number; userAccessToken: string }) {
+  for (let page = 1; page <= GITHUB_USER_INSTALLATIONS_MAX_PAGES; page += 1) {
+    const response = await requestGithubJson<{ installations?: unknown[] }>({
+      fetchFn: input.fetchFn,
+      headers: {
+        Authorization: `Bearer ${input.userAccessToken}`,
+      },
+      path: `/user/installations?per_page=${GITHUB_USER_INSTALLATIONS_PAGE_SIZE}&page=${page}`,
+    })
+
+    const installations = Array.isArray(response.body?.installations) ? response.body.installations : []
+    if (installations.some((entry) => Boolean(entry) && typeof entry === "object" && (entry as Record<string, unknown>).id === input.installationId)) {
+      return true
+    }
+    if (installations.length < GITHUB_USER_INSTALLATIONS_PAGE_SIZE) {
+      return false
+    }
+  }
+
+  return false
 }
 
 export async function getGithubInstallationSummary(input: { config: GithubConnectorAppConfig; fetchFn?: GithubFetch; installationId: number }) {

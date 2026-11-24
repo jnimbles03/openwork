@@ -334,8 +334,8 @@ export const connectorMappingUpdateSchema = z.object({
 })
 
 export const githubConnectorSetupSchema = z.object({
-  installationId: z.number().int().positive(),
-  connectorAccountId: connectorAccountIdSchema.optional(),
+  installationId: z.number().int().positive().optional(),
+  connectorAccountId: connectorAccountIdSchema,
   connectorInstanceName: z.string().trim().min(1).max(255),
   repositoryId: z.number().int().positive(),
   repositoryFullName: z.string().trim().min(1).max(255),
@@ -349,7 +349,8 @@ export const githubInstallStartSchema = z.object({
 })
 
 export const githubInstallCompleteSchema = z.object({
-  installationId: z.number().int().positive(),
+  code: z.string().trim().min(1).max(512).optional(),
+  installationId: z.number().int().positive().optional(),
   state: z.string().trim().min(1).max(4096),
 })
 
@@ -364,15 +365,9 @@ export const githubDiscoveryTreeQuerySchema = z.object({
   prefix: z.string().trim().min(1).max(1024).optional(),
 })
 
-export const githubConnectorAccountCreateSchema = z.object({
-  installationId: z.number().int().positive(),
-  accountLogin: z.string().trim().min(1).max(255),
-  accountType: z.enum(["Organization", "User"]),
-  displayName: z.string().trim().min(1).max(255),
-})
-
 export const githubValidateTargetSchema = z.object({
-  installationId: z.number().int().positive(),
+  connectorAccountId: connectorAccountIdSchema,
+  installationId: z.number().int().positive().optional(),
   repositoryId: z.number().int().positive(),
   repositoryFullName: z.string().trim().min(1).max(255),
   branch: z.string().trim().min(1).max(255),
@@ -481,7 +476,7 @@ export const connectorAccountSchema = z.object({
   id: connectorAccountIdSchema,
   organizationId: denTypeIdSchema("organization"),
   connectorType: connectorTypeSchema,
-  remoteId: z.string().trim().min(1).max(255),
+  remoteId: z.string().trim().min(1).max(255).nullable(),
   externalAccountRef: z.string().trim().min(1).max(255).nullable(),
   displayName: z.string().trim().min(1).max(255),
   status: connectorAccountStatusSchema,
