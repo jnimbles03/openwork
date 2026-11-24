@@ -404,6 +404,7 @@ export default {
   "den.error_open_worker_fallback": "Failed to open {name}.",
   "den.error_paste_valid_code": "Paste a valid OpenWork sign-in link or one-time sign-in code.",
   "den.error_signin_failed": "Failed to complete OpenWork Cloud sign-in.",
+  "den.error_signin_not_started": "This sign-in code was not requested from this app. Start sign-in from OpenWork and try again.",
   "den.error_worker_not_ready": "Worker is not ready to open yet. Try again after provisioning finishes.",
   "den.finish_signin": "Finish sign-in",
   "den.finishing": "Finishing...",

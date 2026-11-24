@@ -251,7 +251,7 @@ export function getSocialCallbackUrl(): string {
     const callbackUrl = new URL("/", origin);
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      for (const key of ["mode", "desktopAuth", "desktopScheme", "invite"]) {
+      for (const key of ["mode", "desktopAuth", "desktopScheme", "desktopState", "invite"]) {
         const value = params.get(key)?.trim() ?? "";
         if (value) {
           callbackUrl.searchParams.set(key, value);

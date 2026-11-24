@@ -1,4 +1,3 @@
-import { DEFAULT_DEN_BASE_URL, normalizeDenBaseUrl } from "./den";
 import { normalizeOpenworkServerUrl } from "./openwork-server";
 import { normalizeBundleImportIntent, parseBundleDeepLink } from "../bundles/sources";
 import type { BundleRequest } from "../bundles/types";
@@ -13,7 +12,7 @@ export type RemoteWorkspaceDefaults = {
 
 export type DenAuthDeepLink = {
   grant: string;
-  denBaseUrl: string;
+  state: string | null;
 };
 
 function isSupportedDeepLinkProtocol(protocol: string): boolean {
@@ -126,12 +125,31 @@ export function parseDenAuthDeepLink(rawUrl: string): DenAuthDeepLink | null {
   }
 
   const grant = url.searchParams.get("grant")?.trim() ?? "";
-  const denBaseUrl = normalizeDenBaseUrl(url.searchParams.get("denBaseUrl")?.trim() ?? "") ?? DEFAULT_DEN_BASE_URL;
   if (!grant) {
     return null;
   }
 
-  return { grant, denBaseUrl };
+  return { grant, state: url.searchParams.get("state")?.trim() || null };
+}
+
+/**
+ * Parse a pasted manual-auth input: either a raw handoff grant string
+ * (>= 12 chars, no state) or an `openwork://den-auth?grant=…` deep link.
+ */
+export function parseManualDenAuthInput(value: string): DenAuthDeepLink | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const protocol = new URL(trimmed).protocol.toLowerCase();
+    if (protocol === "openwork:" || protocol === "openwork-dev:") {
+      return parseDenAuthDeepLink(trimmed);
+    }
+  } catch {
+    // Treat non-URL input as a raw handoff grant.
+  }
+
+  return trimmed.length >= 12 ? { grant: trimmed, state: null } : null;
 }
 
 function normalizeDebugDeepLinkInput(rawValue: string): string {

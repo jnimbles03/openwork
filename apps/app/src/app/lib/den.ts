@@ -29,7 +29,10 @@ const STORAGE_AUTH_TOKEN = "openwork.den.authToken";
 const STORAGE_ACTIVE_ORG_ID = "openwork.den.activeOrgId";
 const STORAGE_ACTIVE_ORG_SLUG = "openwork.den.activeOrgSlug";
 const STORAGE_ACTIVE_ORG_NAME = "openwork.den.activeOrgName";
+const STORAGE_PENDING_DESKTOP_SIGNINS = "openwork.den.pendingDesktopSignins";
 const DEFAULT_DEN_TIMEOUT_MS = 12_000;
+const DESKTOP_SIGNIN_TTL_MS = 30 * 60 * 1000;
+const MAX_PENDING_DESKTOP_SIGNINS = 5;
 
 export const DEFAULT_DEN_AUTH_NAME = "OpenWork User";
 const BUILD_DEN_BASE_URL =
@@ -59,6 +62,11 @@ export type DenSettings = {
 type DenBaseUrls = {
   baseUrl: string;
   apiBaseUrl: string;
+};
+
+export type DenDesktopSignInRequest = DenBaseUrls & {
+  state: string;
+  createdAt: number;
 };
 
 export type DenBootstrapConfig = DenBaseUrls & {
@@ -496,12 +504,102 @@ export async function setDenBootstrapConfig(
   return readDenBootstrapConfig();
 }
 
+function readPendingDesktopSignIns(now: number): DenDesktopSignInRequest[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(STORAGE_PENDING_DESKTOP_SIGNINS) ?? "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((entry): entry is DenDesktopSignInRequest =>
+      isRecord(entry) &&
+      typeof entry.state === "string" &&
+      entry.state.length > 0 &&
+      typeof entry.baseUrl === "string" &&
+      typeof entry.apiBaseUrl === "string" &&
+      typeof entry.createdAt === "number" &&
+      now >= entry.createdAt &&
+      now - entry.createdAt < DESKTOP_SIGNIN_TTL_MS,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writePendingDesktopSignIns(entries: DenDesktopSignInRequest[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (entries.length === 0) {
+    window.localStorage.removeItem(STORAGE_PENDING_DESKTOP_SIGNINS);
+    return;
+  }
+  window.localStorage.setItem(STORAGE_PENDING_DESKTOP_SIGNINS, JSON.stringify(entries));
+}
+
+function createDesktopSignInState(): string {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function beginDenDesktopSignIn(baseUrl: string): string {
+  const now = Date.now();
+  const resolved = resolveDenBaseUrls(baseUrl);
+  const settings = readDenSettings();
+  const apiBaseUrl =
+    settings.baseUrl === resolved.baseUrl && settings.apiBaseUrl ? settings.apiBaseUrl : resolved.apiBaseUrl;
+  const state = createDesktopSignInState();
+  writePendingDesktopSignIns(
+    [...readPendingDesktopSignIns(now), { state, baseUrl: resolved.baseUrl, apiBaseUrl, createdAt: now }].slice(
+      -MAX_PENDING_DESKTOP_SIGNINS,
+    ),
+  );
+  return state;
+}
+
+function takePendingDesktopSignIn(
+  select: (pending: DenDesktopSignInRequest[]) => number,
+): DenDesktopSignInRequest | null {
+  const pending = readPendingDesktopSignIns(Date.now());
+  const index = select(pending);
+  const match = index >= 0 ? pending[index] ?? null : null;
+  writePendingDesktopSignIns(match ? pending.filter((_, entryIndex) => entryIndex !== index) : pending);
+  return match;
+}
+
+/**
+ * Claims the browser sign-in this app started with `state`. Handoff grants
+ * must only be exchanged against the Den URLs recorded here, never against a
+ * URL carried by the incoming link.
+ */
+export function consumeDenDesktopSignIn(state: string | null | undefined): DenDesktopSignInRequest | null {
+  const expected = state?.trim() ?? "";
+  if (!expected) {
+    return null;
+  }
+  return takePendingDesktopSignIn((pending) => pending.findIndex((entry) => entry.state === expected));
+}
+
+/**
+ * Claims the most recent browser sign-in this app started. Only for codes the
+ * user pastes by hand, which carry no state.
+ */
+export function consumeLatestDenDesktopSignIn(): DenDesktopSignInRequest | null {
+  return takePendingDesktopSignIn((pending) => pending.length - 1);
+}
+
 export function buildDenAuthUrl(baseUrl: string, mode: "sign-in" | "sign-up"): string {
   const target = new URL(resolveDenBaseUrls(baseUrl).baseUrl);
   target.searchParams.set("mode", mode);
   if (isDesktopDeployment()) {
     target.searchParams.set("desktopAuth", "1");
     target.searchParams.set("desktopScheme", "openwork");
+    target.searchParams.set("desktopState", beginDenDesktopSignIn(baseUrl));
   }
   return target.toString();
 }
