@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -131,6 +131,7 @@ function createOrchestratorState() {
     dataDir: null,
     baseUrl: null,
     daemonPort: null,
+    daemonToken: null,
     lastStdout: null,
     lastStderr: null,
   };
@@ -234,13 +235,13 @@ async function findFreePort(host = "127.0.0.1") {
   });
 }
 
-async function waitForHttpOk(url, timeoutMs) {
+async function waitForHttpOk(url, timeoutMs, init = undefined) {
   const deadline = Date.now() + timeoutMs;
   let lastError = "Request did not succeed.";
 
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, init);
       if (response.ok) {
         return response;
       }
@@ -382,14 +383,28 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
     await rm(orchestratorAuthPath(dataDir), { force: true });
   }
 
+  async function readOrchestratorDaemonToken(dataDir) {
+    try {
+      const stored = (await readFile(path.join(dataDir, "openwork-orchestrator-daemon-token"), "utf8")).trim();
+      if (stored) return stored;
+    } catch {
+      // fall back to the token this process generated
+    }
+    return orchestratorState.daemonToken ?? "";
+  }
+
   async function requestOrchestratorShutdown(dataDir) {
     const state = await readOrchestratorStateFile(dataDir);
     const baseUrl = state?.daemon?.baseUrl?.trim();
     if (!baseUrl) return false;
+    const token = await readOrchestratorDaemonToken(dataDir);
     try {
       await fetch(`${baseUrl.replace(/\/+$/, "")}/shutdown`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       return true;
     } catch {
@@ -988,6 +1003,7 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
     const daemonPort = await findFreePort("127.0.0.1");
     const opencodePort = await findFreePort("127.0.0.1");
     const [username, password] = generateManagedCredentials();
+    const daemonToken = randomBytes(32).toString("base64url");
 
     const orchestratorProgram = resolveBinary("openwork-orchestrator") ?? resolveBinary("openwork");
     if (!orchestratorProgram) {
@@ -1003,6 +1019,7 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
       OPENWORK_INTERNAL_ALLOW_OPENCODE_CREDENTIALS: "1",
       OPENWORK_OPENCODE_USERNAME: username,
       OPENWORK_OPENCODE_PASSWORD: password,
+      OPENWORK_ROUTER_DAEMON_TOKEN: daemonToken,
       ...(options.opencodeEnableExa === true ? { OPENCODE_ENABLE_EXA: "1" } : {}),
     });
 
@@ -1032,6 +1049,7 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
     orchestratorState.dataDir = dataDir;
     orchestratorState.daemonPort = daemonPort;
     orchestratorState.baseUrl = `http://127.0.0.1:${daemonPort}`;
+    orchestratorState.daemonToken = daemonToken;
 
     await writeOrchestratorAuthFile(dataDir, {
       opencodeUsername: username,
@@ -1039,7 +1057,9 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
       projectDir,
     });
 
-    const health = await waitForHttpOk(`${orchestratorState.baseUrl}/health`, 180_000).then((response) => response.json());
+    const health = await waitForHttpOk(`${orchestratorState.baseUrl}/health`, 180_000, {
+      headers: { Authorization: `Bearer ${daemonToken}` },
+    }).then((response) => response.json());
     const opencode = health?.opencode;
     if (!opencode?.port) {
       throw new Error("Orchestrator did not report OpenCode status.");

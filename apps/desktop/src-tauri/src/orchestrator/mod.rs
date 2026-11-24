@@ -48,6 +48,16 @@ fn orchestrator_auth_path(data_dir: &str) -> PathBuf {
     Path::new(data_dir).join("openwork-orchestrator-auth.json")
 }
 
+fn orchestrator_daemon_token_path(data_dir: &str) -> PathBuf {
+    Path::new(data_dir).join("openwork-orchestrator-daemon-token")
+}
+
+fn read_orchestrator_daemon_token(data_dir: &str) -> Option<String> {
+    let token = fs::read_to_string(orchestrator_daemon_token_path(data_dir)).ok()?;
+    let token = token.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
 pub fn clear_orchestrator_auth(data_dir: &str) {
     let path = orchestrator_auth_path(data_dir);
     let _ = fs::remove_file(path);
@@ -74,10 +84,15 @@ pub fn request_orchestrator_shutdown(data_dir: &str) -> Result<bool, String> {
         .timeout(std::time::Duration::from_millis(1500))
         .build();
 
-    agent
+    let mut request = agent
         .post(&url)
         .set("Accept", "application/json")
-        .set("Content-Type", "application/json")
+        .set("Content-Type", "application/json");
+    if let Some(token) = read_orchestrator_daemon_token(data_dir) {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+
+    request
         .send_string("")
         .map_err(|e| format!("Failed to request orchestrator shutdown at {url}: {e}"))?;
 
@@ -118,6 +133,9 @@ mod tests {
             let bytes = stream.read(&mut buffer).expect("read request");
             let request = String::from_utf8_lossy(&buffer[..bytes]);
             assert!(request.starts_with("POST /shutdown "));
+            assert!(request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer placeholder-daemon-token")));
             stream
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
@@ -138,6 +156,11 @@ mod tests {
             ),
         )
         .expect("write state file");
+        fs::write(
+            dir.join("openwork-orchestrator-daemon-token"),
+            "placeholder-daemon-token\n",
+        )
+        .expect("write daemon token file");
 
         let stopped = request_orchestrator_shutdown(&dir.to_string_lossy()).expect("request");
         assert!(stopped);

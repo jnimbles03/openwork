@@ -142,6 +142,12 @@ openwork instance dispose <id>
 
 Use `OPENWORK_DATA_DIR` or `--data-dir` to isolate router state in tests.
 
+The daemon only accepts loopback `Host` headers, sends no CORS headers, and requires
+`Authorization: Bearer <token>` on every route except a minimal `GET /health`. The token comes
+from `OPENWORK_ROUTER_DAEMON_TOKEN` (or is generated per launch) and is written to
+`openwork-orchestrator-daemon-token` (mode `0600`) in the data dir, where the `openwork daemon`,
+`workspace`, and `instance` commands read it. Request bodies must be `application/json`.
+
 ## Pairing notes
 
 - Use the **OpenWork connect URL** and **client token** to connect a remote OpenWork client.
