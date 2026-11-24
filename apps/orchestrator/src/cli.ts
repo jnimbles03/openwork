@@ -6263,8 +6263,6 @@ async function runRouterDaemon(args: ParsedArgs) {
       }
     }
 
-    const readBody = async () => parsedBody;
-
     try {
       if (req.method === "GET" && url.pathname === "/health") {
         send(200, {
@@ -6286,7 +6284,7 @@ async function runRouterDaemon(args: ParsedArgs) {
       }
 
       if (req.method === "POST" && url.pathname === "/workspaces") {
-        const body = await readBody();
+        const body = parsedBody;
         const pathInput =
           typeof body?.path === "string" ? body.path.trim() : "";
         if (!pathInput) {
@@ -6317,7 +6315,7 @@ async function runRouterDaemon(args: ParsedArgs) {
       }
 
       if (req.method === "POST" && url.pathname === "/workspaces/remote") {
-        const body = await readBody();
+        const body = parsedBody;
         const baseUrl =
           typeof body?.baseUrl === "string" ? body.baseUrl.trim() : "";
         if (
