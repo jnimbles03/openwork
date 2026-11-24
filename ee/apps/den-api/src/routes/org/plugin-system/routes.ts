@@ -62,7 +62,6 @@ import {
   connectorTargetMutationResponseSchema,
   connectorTargetParamsSchema,
   connectorTargetUpdateSchema,
-  githubConnectorAccountCreateSchema,
   githubInstallCompleteResponseSchema,
   githubInstallCompleteSchema,
   githubInstallStartResponseSchema,
@@ -110,7 +109,6 @@ import {
   createConnectorAccount,
   createConnectorInstance,
   createConnectorMapping,
-  createGithubConnectorAccount,
   createMarketplace,
   createPlugin,
   createResourceAccessGrant,
@@ -206,7 +204,7 @@ function routeErrorResponse(c: OrgContext, error: unknown) {
   }
   if (error instanceof PluginArchRouteFailure) {
     const failure = error as PluginArchRouteFailure
-    return c.json({ error: failure.error, message: failure.message }, failure.status)
+    return c.json({ ...failure.details, error: failure.error, message: failure.message }, failure.status)
   }
   throw error
 }
@@ -268,7 +266,7 @@ export function registerPluginArchRoutes<T extends { Variables: OrgRouteVariable
         const context = actorContext(c)
         await requirePluginArchCapability(context, "connector_account.create")
         const body = validJson<any>(c)
-        return c.json({ ok: true, item: await completeGithubConnectorInstall({ context, installationId: body.installationId, state: body.state }) })
+        return c.json({ ok: true, item: await completeGithubConnectorInstall({ code: body.code, context, installationId: body.installationId, state: body.state }) })
       } catch (error) {
         return routeErrorResponse(c, error)
       }
@@ -1872,30 +1870,6 @@ export function registerPluginArchRoutes<T extends { Variables: OrgRouteVariable
       }
     })
 
-  withPluginArchOrgContext(app, "post", pluginArchRoutePaths.githubAccounts,
-    jsonValidator(githubConnectorAccountCreateSchema),
-    describeRoute({
-      tags: ["GitHub"],
-      summary: "Create GitHub connector account",
-      description: "Persists one GitHub App installation as a connector account.",
-      responses: {
-        201: jsonResponse("GitHub connector account created successfully.", connectorAccountMutationResponseSchema),
-        400: jsonResponse("The GitHub account creation request was invalid.", invalidRequestSchema),
-        401: jsonResponse("The caller must be signed in to create GitHub connector accounts.", unauthorizedSchema),
-        403: jsonResponse("The caller lacks permission to create GitHub connector accounts.", forbiddenSchema),
-      },
-    }),
-    async (c: OrgContext) => {
-      try {
-        const context = actorContext(c)
-        await requirePluginArchCapability(context, "connector_account.create")
-        const body = validJson<any>(c)
-        return c.json({ ok: true, item: await createGithubConnectorAccount({ accountLogin: body.accountLogin, accountType: body.accountType, context, displayName: body.displayName, installationId: body.installationId }) }, 201)
-      } catch (error) {
-        return routeErrorResponse(c, error)
-      }
-    })
-
   withPluginArchOrgContext(app, "post", pluginArchRoutePaths.githubSetup,
     jsonValidator(githubConnectorSetupSchema),
     describeRoute({
@@ -1954,10 +1928,15 @@ export function registerPluginArchRoutes<T extends { Variables: OrgRouteVariable
         200: jsonResponse("GitHub target validated successfully.", githubValidateTargetResponseSchema),
         400: jsonResponse("The GitHub target validation request was invalid.", invalidRequestSchema),
         401: jsonResponse("The caller must be signed in to validate GitHub targets.", unauthorizedSchema),
+        404: jsonResponse("The connector account could not be found.", notFoundSchema),
       },
     }),
     async (c: OrgContext) => {
-      const body = validJson<any>(c)
-      return c.json({ ok: true, item: await validateGithubTarget({ branch: body.branch, installationId: body.installationId, ref: body.ref, repositoryFullName: body.repositoryFullName, repositoryId: body.repositoryId }) })
+      try {
+        const body = validJson<any>(c)
+        return c.json({ ok: true, item: await validateGithubTarget({ branch: body.branch, connectorAccountId: body.connectorAccountId, context: actorContext(c), installationId: body.installationId, ref: body.ref, repositoryFullName: body.repositoryFullName, repositoryId: body.repositoryId }) })
+      } catch (error) {
+        return routeErrorResponse(c, error)
+      }
     })
 }
