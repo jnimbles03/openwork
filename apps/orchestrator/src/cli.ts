@@ -4,7 +4,12 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from "node:child_process";
-import { randomBytes, randomUUID, createHash } from "node:crypto";
+import {
+  randomBytes,
+  randomUUID,
+  createHash,
+  timingSafeEqual,
+} from "node:crypto";
 import {
   chmod,
   copyFile,
@@ -133,6 +138,8 @@ const DEFAULT_APPROVAL_TIMEOUT = 30000;
 const MANAGED_OPENCODE_CREDENTIAL_LENGTH = 512;
 const INTERNAL_OPENCODE_CREDENTIALS_ENV =
   "OPENWORK_INTERNAL_ALLOW_OPENCODE_CREDENTIALS";
+const ROUTER_DAEMON_TOKEN_ENV = "OPENWORK_ROUTER_DAEMON_TOKEN";
+const ROUTER_DAEMON_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_OPENCODE_HOT_RELOAD_DEBOUNCE_MS = 700;
 const DEFAULT_OPENCODE_HOT_RELOAD_COOLDOWN_MS = 1500;
 const DEFAULT_ACTIVITY_WINDOW_MS = 5 * 60_000;
@@ -3087,6 +3094,83 @@ function routerStatePath(dataDir: string): string {
   return join(dataDir, "openwork-orchestrator-state.json");
 }
 
+function routerDaemonTokenPath(dataDir: string): string {
+  return join(dataDir, "openwork-orchestrator-daemon-token");
+}
+
+async function readRouterDaemonToken(dataDir: string): Promise<string> {
+  try {
+    const stored = (
+      await readFile(routerDaemonTokenPath(dataDir), "utf8")
+    ).trim();
+    if (stored) return stored;
+  } catch {
+    // fall back to the environment
+  }
+  return process.env[ROUTER_DAEMON_TOKEN_ENV]?.trim() ?? "";
+}
+
+async function writeRouterDaemonToken(
+  dataDir: string,
+  token: string,
+): Promise<void> {
+  const target = routerDaemonTokenPath(dataDir);
+  const temp = `${target}.${process.pid}.tmp`;
+  await mkdir(dirname(target), { recursive: true });
+  await rm(temp, { force: true });
+  await writeFile(temp, `${token}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  await rename(temp, target);
+}
+
+async function removeRouterDaemonToken(
+  dataDir: string,
+  token: string,
+): Promise<void> {
+  const target = routerDaemonTokenPath(dataDir);
+  try {
+    if ((await readFile(target, "utf8")).trim() !== token) return;
+    await rm(target, { force: true });
+  } catch {
+    // already gone
+  }
+}
+
+function routerAuthHeaders(token: string): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function routerDaemonTokenMatches(
+  header: string | undefined,
+  expectedDigest: Buffer,
+): boolean {
+  const match = /^Bearer[ ]+(\S+)[ ]*$/i.exec(header ?? "");
+  if (!match) return false;
+  const presented = createHash("sha256").update(match[1], "utf8").digest();
+  return timingSafeEqual(presented, expectedDigest);
+}
+
+function isAllowedRouterHost(
+  hostHeader: string | undefined,
+  bindHost: string,
+): boolean {
+  const match = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::\d{1,5})?$/i.exec(
+    hostHeader?.trim() ?? "",
+  );
+  if (!match) return false;
+  const name = match[1].toLowerCase().replace(/^\[|\]$/g, "");
+  if (isLoopbackHost(name)) return true;
+  const bind = bindHost.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return bind !== "" && bind !== "0.0.0.0" && bind !== "::" && name === bind;
+}
+
+function isJsonContentType(value: string | undefined): boolean {
+  return (value ?? "").split(";")[0].trim().toLowerCase() === "application/json";
+}
+
 function nowMs(): number {
   return Date.now();
 }
@@ -5654,6 +5738,9 @@ async function spawnRouterDaemon(
   if (logFormat) commandArgs.push("--log-format", String(logFormat));
   if (runId) commandArgs.push("--run-id", String(runId));
 
+  const token =
+    process.env[ROUTER_DAEMON_TOKEN_ENV]?.trim() ||
+    randomBytes(32).toString("base64url");
   const child = spawnProcess(self.command, commandArgs, {
     detached: true,
     stdio: "ignore",
@@ -5661,15 +5748,17 @@ async function spawnRouterDaemon(
       ...process.env,
       OPENWORK_OPENCODE_USERNAME: opencodeUsername,
       OPENWORK_OPENCODE_PASSWORD: opencodePassword,
+      [ROUTER_DAEMON_TOKEN_ENV]: token,
     },
   });
   child.unref();
+  return token;
 }
 
 async function ensureRouterDaemon(
   args: ParsedArgs,
   autoStart = true,
-): Promise<{ baseUrl: string; dataDir: string }> {
+): Promise<{ baseUrl: string; dataDir: string; token: string }> {
   const dataDir = resolveRouterDataDir(args.flags);
   const statePath = routerStatePath(dataDir);
   const state = await loadRouterState(statePath);
@@ -5677,7 +5766,8 @@ async function ensureRouterDaemon(
   if (existing && existing.baseUrl && isProcessAlive(existing.pid)) {
     try {
       await waitForRouterHealthy(existing.baseUrl, 1500, 150);
-      return { baseUrl: existing.baseUrl, dataDir };
+      const token = await readRouterDaemonToken(dataDir);
+      return { baseUrl: existing.baseUrl, dataDir, token };
     } catch {
       // fallthrough
     }
@@ -5693,9 +5783,9 @@ async function ensureRouterDaemon(
     "127.0.0.1",
   );
   const baseUrl = `http://${host}:${port}`;
-  await spawnRouterDaemon(args, dataDir, host, port);
+  const token = await spawnRouterDaemon(args, dataDir, host, port);
   await waitForRouterHealthy(baseUrl, 10_000, 250);
-  return { baseUrl, dataDir };
+  return { baseUrl, dataDir, token };
 }
 
 async function requestRouter(
@@ -5705,9 +5795,9 @@ async function requestRouter(
   body?: unknown,
   autoStart = true,
 ) {
-  const { baseUrl } = await ensureRouterDaemon(args, autoStart);
+  const { baseUrl, token } = await ensureRouterDaemon(args, autoStart);
   const url = `${baseUrl.replace(/\/$/, "")}${path}`;
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = routerAuthHeaders(token);
   let payload: string | undefined;
   if (body !== undefined) {
     payload = JSON.stringify(body);
@@ -5730,21 +5820,26 @@ async function runDaemonCommand(args: ParsedArgs) {
       return;
     }
     if (subcommand === "start") {
-      const { baseUrl } = await ensureRouterDaemon(args, true);
-      const status = await fetchJson(`${baseUrl.replace(/\/$/, "")}/health`);
+      const { baseUrl, token } = await ensureRouterDaemon(args, true);
+      const status = await fetchJson(`${baseUrl.replace(/\/$/, "")}/health`, {
+        headers: routerAuthHeaders(token),
+      });
       outputResult({ ok: true, baseUrl, ...status }, outputJson);
       return;
     }
     if (subcommand === "status") {
-      const { baseUrl } = await ensureRouterDaemon(args, false);
-      const status = await fetchJson(`${baseUrl.replace(/\/$/, "")}/health`);
+      const { baseUrl, token } = await ensureRouterDaemon(args, false);
+      const status = await fetchJson(`${baseUrl.replace(/\/$/, "")}/health`, {
+        headers: routerAuthHeaders(token),
+      });
       outputResult({ ok: true, baseUrl, ...status }, outputJson);
       return;
     }
     if (subcommand === "stop") {
-      const { baseUrl } = await ensureRouterDaemon(args, false);
+      const { baseUrl, token } = await ensureRouterDaemon(args, false);
       await fetchJson(`${baseUrl.replace(/\/$/, "")}/shutdown`, {
         method: "POST",
+        headers: routerAuthHeaders(token),
       });
       outputResult({ ok: true }, outputJson);
       return;
@@ -5902,6 +5997,13 @@ async function runRouterDaemon(args: ParsedArgs) {
     readNumber(args.flags, "daemon-port", undefined, "OPENWORK_DAEMON_PORT"),
     "127.0.0.1",
   );
+  const routerToken =
+    process.env[ROUTER_DAEMON_TOKEN_ENV]?.trim() ||
+    randomBytes(32).toString("base64url");
+  delete process.env[ROUTER_DAEMON_TOKEN_ENV];
+  const routerTokenDigest = createHash("sha256")
+    .update(routerToken, "utf8")
+    .digest();
 
   const opencodeBin =
     readFlag(args.flags, "opencode-bin") ?? process.env.OPENWORK_OPENCODE_BIN;
@@ -6099,33 +6201,69 @@ async function runRouterDaemon(args: ParsedArgs) {
         "openwork-orchestrator-router",
       );
     });
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-    if (req.method === "OPTIONS") {
-      res.statusCode = 204;
-      res.end();
-      return;
-    }
     const parts = url.pathname.split("/").filter(Boolean);
 
     const send = (status: number, payload: unknown) => {
       res.statusCode = status;
       res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store");
       res.end(JSON.stringify(payload));
     };
 
-    const readBody = async () => {
+    if (!isAllowedRouterHost(req.headers.host, host)) {
+      send(403, { error: "host not allowed" });
+      return;
+    }
+
+    const authorized = routerDaemonTokenMatches(
+      req.headers.authorization,
+      routerTokenDigest,
+    );
+
+    if (req.method === "GET" && url.pathname === "/health" && !authorized) {
+      send(200, { ok: true });
+      return;
+    }
+
+    if (!authorized) {
+      res.setHeader("WWW-Authenticate", "Bearer");
+      send(401, { error: "unauthorized" });
+      return;
+    }
+
+    let parsedBody: any = null;
+    if (req.method === "POST") {
       const chunks: Buffer[] = [];
+      let size = 0;
       for await (const chunk of req) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += buffer.length;
+        if (size > ROUTER_DAEMON_MAX_BODY_BYTES) {
+          send(413, { error: "request body too large" });
+          return;
+        }
+        chunks.push(buffer);
       }
-      if (!chunks.length) return null;
       const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw.trim()) return null;
-      return JSON.parse(raw);
-    };
+      const contentType = req.headers["content-type"];
+      if (
+        (contentType !== undefined || raw.trim()) &&
+        !isJsonContentType(contentType)
+      ) {
+        send(415, { error: "Content-Type must be application/json" });
+        return;
+      }
+      if (raw.trim()) {
+        try {
+          parsedBody = JSON.parse(raw);
+        } catch {
+          send(400, { error: "invalid JSON body" });
+          return;
+        }
+      }
+    }
+
+    const readBody = async () => parsedBody;
 
     try {
       if (req.method === "GET" && url.pathname === "/health") {
@@ -6281,7 +6419,7 @@ async function runRouterDaemon(args: ParsedArgs) {
         const client = createOpencodeClient({
           baseUrl,
           directory: directory ? directory : undefined,
-          headers: authHeaders,
+          headers: isRemote ? undefined : authHeaders,
         });
         const pathInfo = unwrap(await client.path.get());
         workspace.lastUsedAt = nowMs();
@@ -6317,7 +6455,7 @@ async function runRouterDaemon(args: ParsedArgs) {
           : workspace.path;
         const response = await fetch(
           `${baseUrl.replace(/\/$/, "")}/instance/dispose?directory=${encodeURIComponent(directory)}`,
-          { method: "POST", headers: authHeaders },
+          { method: "POST", headers: isRemote ? undefined : authHeaders },
         );
         const ok = response.ok ? await response.json() : false;
         workspace.lastUsedAt = nowMs();
@@ -6362,9 +6500,11 @@ async function runRouterDaemon(args: ParsedArgs) {
       state.opencode = undefined;
     }
     await saveRouterState(statePath, state);
+    await removeRouterDaemonToken(dataDir, routerToken);
     process.exit(0);
   };
 
+  await writeRouterDaemonToken(dataDir, routerToken);
   server.listen(port, host, async () => {
     state.daemon = {
       pid: process.pid,
