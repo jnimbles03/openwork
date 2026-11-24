@@ -57,6 +57,7 @@ export function GithubIntegrationScreen() {
   const mode = searchParams.get("mode")?.trim() ?? null;
   const installationId = parseInstallationId(searchParams.get("installation_id"));
   const state = searchParams.get("state")?.trim() ?? null;
+  const code = searchParams.get("code")?.trim() || null;
 
   if (connectorInstanceId) {
     return (
@@ -72,8 +73,8 @@ export function GithubIntegrationScreen() {
     return <GithubConnectedAccountSelectionPhase connectorAccountId={connectorAccountId} />;
   }
 
-  if (installationId && state) {
-    return <GithubInstallCompletionRedirect installationId={installationId} state={state} />;
+  if ((installationId || code) && state) {
+    return <GithubInstallCompletionRedirect code={code} installationId={installationId} state={state} />;
   }
 
   return (
@@ -92,10 +93,10 @@ export function GithubIntegrationScreen() {
   );
 }
 
-function GithubInstallCompletionRedirect({ installationId, state }: { installationId: number; state: string }) {
+function GithubInstallCompletionRedirect({ code, installationId, state }: { code: string | null; installationId: number | null; state: string }) {
   const { orgSlug } = useOrgDashboard();
   const queryClient = useQueryClient();
-  const completionQuery = useGithubInstallCompletion({ installationId, state });
+  const completionQuery = useGithubInstallCompletion({ code, installationId, state });
 
   useEffect(() => {
     if (!completionQuery.data) return;
@@ -626,7 +627,7 @@ function GithubConnectedAccountSelectionPhase({ connectorAccountId }: { connecto
   const selectedRepo = unconfiguredRepos.find((repo) => repo.id === selectedRepoId) ?? null;
 
   async function handleConnectRepo() {
-    if (!connection?.account.installationId || !selectedRepo || !selectedRepo.defaultBranch) {
+    if (!connection || !selectedRepo || !selectedRepo.defaultBranch) {
       return;
     }
 
@@ -639,7 +640,6 @@ function GithubConnectedAccountSelectionPhase({ connectorAccountId }: { connecto
       branch: selectedRepo.defaultBranch,
       connectorAccountId,
       connectorInstanceName: selectedRepo.fullName,
-      installationId: connection.account.installationId,
       repositoryFullName: selectedRepo.fullName,
       repositoryId,
     });

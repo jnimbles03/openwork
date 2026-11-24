@@ -433,20 +433,32 @@ export function useStartGithubInstall() {
   });
 }
 
-export function useGithubInstallCompletion(input: { installationId: number | null; state: string | null }) {
+export function useGithubInstallCompletion(input: { code: string | null; installationId: number | null; state: string | null }) {
+  const hasInstallationId = Number.isFinite(input.installationId ?? NaN) && (input.installationId ?? 0) > 0;
   return useQuery({
-    enabled: Number.isFinite(input.installationId ?? NaN) && (input.installationId ?? 0) > 0 && Boolean(input.state?.trim()),
-    queryKey: [...integrationQueryKeys.githubInstall(input.installationId), input.state ?? "no-state"] as const,
+    enabled: (hasInstallationId || Boolean(input.code)) && Boolean(input.state?.trim()),
+    queryKey: [...integrationQueryKeys.githubInstall(input.installationId), input.state ?? "no-state", input.code ?? "no-code"] as const,
     retry: false,
     queryFn: async (): Promise<GithubInstallCompleteResult> => {
       const { response, payload } = await requestJson(
         "/v1/connectors/github/install/complete",
         {
           method: "POST",
-          body: JSON.stringify({ installationId: input.installationId, state: input.state }),
+          body: JSON.stringify({
+            ...(input.code ? { code: input.code } : {}),
+            ...(hasInstallationId ? { installationId: input.installationId } : {}),
+            state: input.state,
+          }),
         },
         20000,
       );
+
+      // GitHub must confirm the signed-in GitHub user can access the installation before it is linked.
+      const authorizeUrl = isRecord(payload) && payload.error === "github_user_authorization_required" ? asString(payload.authorizeUrl) : null;
+      if (response.status === 409 && authorizeUrl) {
+        window.location.assign(authorizeUrl);
+        return new Promise<GithubInstallCompleteResult>(() => {});
+      }
 
       if (!response.ok) {
         throw new Error(getErrorMessage(payload, `Failed to complete GitHub installation (${response.status}).`));
@@ -566,7 +578,6 @@ export function useCreateGithubConnectorInstance() {
       branch: string;
       connectorAccountId: string;
       connectorInstanceName: string;
-      installationId: number;
       repositoryFullName: string;
       repositoryId: number;
     }): Promise<GithubConnectorCreationResult> => {
@@ -578,7 +589,6 @@ export function useCreateGithubConnectorInstance() {
             branch: input.branch,
             connectorAccountId: input.connectorAccountId,
             connectorInstanceName: input.connectorInstanceName,
-            installationId: input.installationId,
             mappings: [],
             ref: `refs/heads/${input.branch}`,
             repositoryFullName: input.repositoryFullName,
