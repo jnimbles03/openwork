@@ -12,6 +12,7 @@ import {
 
 import {
   clearDenSession,
+  consumeDenDesktopSignIn,
   createDenClient,
   DenApiError,
   ensureDenActiveOrganization,
@@ -134,7 +135,17 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
         if (!parsed || handledGrantsRef.current.has(parsed.grant)) continue;
         handledGrantsRef.current.add(parsed.grant);
 
-        void createDenClient({ baseUrl: parsed.denBaseUrl })
+        const signIn = consumeDenDesktopSignIn(parsed.state);
+        if (!signIn) {
+          dispatchDenSessionUpdated({
+            status: "error",
+            message:
+              "Ignored an OpenWork Cloud sign-in link that was not started from this app. Start sign-in from OpenWork and try again.",
+          });
+          continue;
+        }
+
+        void createDenClient({ baseUrl: signIn.baseUrl, apiBaseUrl: signIn.apiBaseUrl })
           .exchangeDesktopHandoff(parsed.grant)
           .then((result) => {
             if (!result.token) {
@@ -142,7 +153,8 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
             }
 
             writeDenSettings({
-              baseUrl: parsed.denBaseUrl,
+              baseUrl: signIn.baseUrl,
+              apiBaseUrl: signIn.apiBaseUrl,
               authToken: result.token,
               activeOrgId: null,
               activeOrgSlug: null,
@@ -151,7 +163,7 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
 
             dispatchDenSessionUpdated({
               status: "success",
-              baseUrl: parsed.denBaseUrl,
+              baseUrl: signIn.baseUrl,
               token: result.token,
               user: result.user,
               email: result.user?.email ?? null,

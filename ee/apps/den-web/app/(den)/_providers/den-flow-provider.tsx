@@ -188,6 +188,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [desktopAuthRequested, setDesktopAuthRequested] = useState(false);
   const [desktopAuthScheme, setDesktopAuthScheme] = useState("openwork");
+  const [desktopAuthState, setDesktopAuthState] = useState<string | null>(null);
   const [desktopRedirectBusy, setDesktopRedirectBusy] = useState(false);
   const [desktopRedirectUrl, setDesktopRedirectUrl] = useState<string | null>(null);
   const [desktopRedirectAttempted, setDesktopRedirectAttempted] = useState(false);
@@ -1003,7 +1004,10 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
       const { response, payload } = await requestJson("/v1/auth/desktop-handoff", {
         method: "POST",
         headers,
-        body: JSON.stringify({ desktopScheme: desktopAuthScheme })
+        body: JSON.stringify({
+          desktopScheme: desktopAuthScheme,
+          ...(desktopAuthState ? { desktopState: desktopAuthState } : {})
+        })
       });
 
       if (!response.ok) {
@@ -1752,6 +1756,10 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     if (/^[a-z][a-z0-9+.-]*$/i.test(requestedScheme)) {
       setDesktopAuthScheme(requestedScheme);
     }
+    const requestedState = params.get("desktopState")?.trim() ?? "";
+    if (/^[A-Za-z0-9_-]{16,128}$/.test(requestedState)) {
+      setDesktopAuthState(requestedState);
+    }
 
     const invitationId = params.get("invite")?.trim() ?? "";
     if (invitationId) {
@@ -1976,7 +1984,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     }
 
     void completeDesktopAuthHandoff();
-  }, [desktopAuthRequested, user?.id, authToken, desktopRedirectUrl, desktopRedirectBusy, desktopRedirectAttempted, desktopAuthScheme]);
+  }, [desktopAuthRequested, user?.id, authToken, desktopRedirectUrl, desktopRedirectBusy, desktopRedirectAttempted, desktopAuthScheme, desktopAuthState]);
 
   useEffect(() => {
     if (!user || !onboardingPending) {

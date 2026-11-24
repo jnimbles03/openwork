@@ -24,6 +24,8 @@ import {
   type DenOrgPlugin,
   type DenOrgSkillHub,
   type DenUser,
+  consumeDenDesktopSignIn,
+  consumeLatestDenDesktopSignIn,
   createDenClient,
   ensureDenActiveOrganization,
   normalizeDenBaseUrl,
@@ -36,6 +38,7 @@ import {
   dispatchDenSessionUpdated,
   type DenSessionUpdatedDetail,
 } from "../../../../app/lib/den-session-events";
+import { parseManualDenAuthInput } from "../../../../app/lib/openwork-links";
 import type { CloudImportedPlugin, CloudImportedProvider, CloudImportedSkill, CloudImportedSkillHub } from "../../../../app/cloud/import-state";
 import type { DenOrgSkillCard, SkillCard } from "../../../../app/types";
 import { Button } from "../../../design-system/button";
@@ -173,33 +176,6 @@ function workerStatusMeta(status: string, tr: (key: string) => string) {
         canOpen: normalized === "ready",
       };
   }
-}
-
-function parseManualAuthInput(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    const protocol = url.protocol.toLowerCase();
-    const routeHost = url.hostname.toLowerCase();
-    const routePath = url.pathname.replace(/^\/+/, "").toLowerCase();
-    const routeSegments = routePath.split("/").filter(Boolean);
-    const routeTail = routeSegments[routeSegments.length - 1] ?? "";
-    if (
-      (protocol === "openwork:" || protocol === "openwork-dev:") &&
-      (routeHost === "den-auth" || routePath === "den-auth" || routeTail === "den-auth")
-    ) {
-      const grant = url.searchParams.get("grant")?.trim() ?? "";
-      const nextBaseUrl =
-        normalizeDenBaseUrl(url.searchParams.get("denBaseUrl")?.trim() ?? "") ?? undefined;
-      return grant ? { grant, baseUrl: nextBaseUrl } : null;
-    }
-  } catch {
-    // Treat non-URL input as a raw handoff grant.
-  }
-
-  return trimmed.length >= 12 ? { grant: trimmed } : null;
 }
 
 export function DenSettingsPanel(props: DenSettingsPanelProps) {
@@ -871,19 +847,27 @@ export function DenSettingsPanel(props: DenSettingsPanelProps) {
   }, [clearSessionState, tr, tx]);
 
   const submitManualAuth = useCallback(async () => {
-    const parsed = parseManualAuthInput(manualAuthInput);
+    const parsed = parseManualDenAuthInput(manualAuthInput);
     if (!parsed || authBusy) {
       if (!parsed) setAuthError(tr("den.error_paste_valid_code"));
       return;
     }
 
-    const nextBaseUrl = parsed.baseUrl ?? baseUrl;
+    const signIn = parsed.state ? consumeDenDesktopSignIn(parsed.state) : consumeLatestDenDesktopSignIn();
+    if (!signIn) {
+      setAuthError(tr("den.error_signin_not_started"));
+      return;
+    }
+    const nextBaseUrl = signIn.baseUrl;
     setAuthBusy(true);
     setAuthError(null);
     setStatusMessage(tr("den.signing_in"));
 
     try {
-      const result = await createDenClient({ baseUrl: nextBaseUrl }).exchangeDesktopHandoff(parsed.grant);
+      const result = await createDenClient({
+        baseUrl: signIn.baseUrl,
+        apiBaseUrl: signIn.apiBaseUrl,
+      }).exchangeDesktopHandoff(parsed.grant);
       if (!result.token) {
         throw new Error(tr("den.error_no_token"));
       }
@@ -894,7 +878,8 @@ export function DenSettingsPanel(props: DenSettingsPanelProps) {
       }
 
       writeDenSettings({
-        baseUrl: nextBaseUrl,
+        baseUrl: signIn.baseUrl,
+        apiBaseUrl: signIn.apiBaseUrl,
         authToken: result.token,
         activeOrgId: null,
         activeOrgSlug: null,
@@ -918,7 +903,7 @@ export function DenSettingsPanel(props: DenSettingsPanelProps) {
     } finally {
       setAuthBusy(false);
     }
-  }, [authBusy, baseUrl, manualAuthInput, props.developerMode, tr]);
+  }, [authBusy, manualAuthInput, props.developerMode, tr]);
 
   const signOut = useCallback(async () => {
     if (authBusy) return;

@@ -13,6 +13,7 @@ import type { AuthContextVariables } from "../../session.js"
 const createGrantSchema = z.object({
   next: z.string().trim().max(128).optional(),
   desktopScheme: z.string().trim().max(32).optional(),
+  desktopState: z.string().trim().regex(/^[A-Za-z0-9_-]{16,128}$/).optional(),
 })
 
 const exchangeGrantSchema = z.object({
@@ -129,6 +130,7 @@ function buildOpenworkDeepLink(input: {
   scheme?: string | null
   grant: string
   denBaseUrl: string
+  state?: string | null
 }) {
   const requestedScheme = input.scheme?.trim() || "openwork"
   const scheme = /^[a-z][a-z0-9+.-]*$/i.test(requestedScheme)
@@ -137,6 +139,9 @@ function buildOpenworkDeepLink(input: {
   const url = new URL(`${scheme}://den-auth`)
   url.searchParams.set("grant", input.grant)
   url.searchParams.set("denBaseUrl", input.denBaseUrl)
+  if (input.state) {
+    url.searchParams.set("state", input.state)
+  }
   return url.toString()
 }
 
@@ -184,6 +189,7 @@ export function registerDesktopAuthRoutes<T extends { Variables: AuthContextVari
         scheme: input.desktopScheme || "openwork",
         grant,
         denBaseUrl,
+        state: input.desktopState,
       }),
     })
     },

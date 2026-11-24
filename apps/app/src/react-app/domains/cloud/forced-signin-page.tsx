@@ -5,6 +5,8 @@ import { currentLocale, t } from "../../../i18n";
 import {
   buildDenAuthUrl,
   clearDenSession,
+  consumeDenDesktopSignIn,
+  consumeLatestDenDesktopSignIn,
   createDenClient,
   DEFAULT_DEN_BASE_URL,
   normalizeDenBaseUrl,
@@ -19,6 +21,7 @@ import {
   dispatchDenSessionUpdated,
   type DenSessionUpdatedDetail,
 } from "../../../app/lib/den-session-events";
+import { parseManualDenAuthInput } from "../../../app/lib/openwork-links";
 import { usePlatform } from "../../kernel/platform";
 import { useBootState } from "../../shell/boot-state";
 import { useDenAuth } from "./den-auth-provider";
@@ -28,41 +31,6 @@ import { DenSignInSurface } from "./den-signin-surface";
 export type ForcedSigninPageProps = {
   developerMode: boolean;
 };
-
-/**
- * Parse a pasted manual-auth input. Accepts either a raw handoff grant
- * string (>= 12 chars) or an `openwork://den-auth?grant=…` deep link.
- * Matches the Solid ForcedSigninPage exactly so flows stay fungible.
- */
-function parseManualAuthInput(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    const protocol = url.protocol.toLowerCase();
-    const routeHost = url.hostname.toLowerCase();
-    const routePath = url.pathname.replace(/^\/+/, "").toLowerCase();
-    const routeSegments = routePath.split("/").filter(Boolean);
-    const routeTail = routeSegments[routeSegments.length - 1] ?? "";
-    if (
-      (protocol === "openwork:" || protocol === "openwork-dev:") &&
-      (routeHost === "den-auth" ||
-        routePath === "den-auth" ||
-        routeTail === "den-auth")
-    ) {
-      const grant = url.searchParams.get("grant")?.trim() ?? "";
-      const nextBaseUrl =
-        normalizeDenBaseUrl(url.searchParams.get("denBaseUrl")?.trim() ?? "") ??
-        undefined;
-      return grant ? { grant, baseUrl: nextBaseUrl } : null;
-    }
-  } catch {
-    // Treat non-URL input as a raw handoff grant.
-  }
-
-  return trimmed.length >= 12 ? { grant: trimmed } : null;
-}
 
 /**
  * React port of the Solid `ForcedSigninPage`
@@ -111,7 +79,7 @@ export function ForcedSigninPage({ developerMode }: ForcedSigninPageProps) {
   );
 
   const submitManualAuth = useCallback(async () => {
-    const parsed = parseManualAuthInput(manualAuthInput);
+    const parsed = parseManualDenAuthInput(manualAuthInput);
     if (!parsed || authBusy) {
       if (!parsed) {
         setAuthError(tr("den.error_paste_valid_code"));
@@ -119,7 +87,14 @@ export function ForcedSigninPage({ developerMode }: ForcedSigninPageProps) {
       return;
     }
 
-    const nextBaseUrl = parsed.baseUrl ?? baseUrl;
+    const signIn = parsed.state
+      ? consumeDenDesktopSignIn(parsed.state)
+      : consumeLatestDenDesktopSignIn();
+    if (!signIn) {
+      setAuthError(tr("den.error_signin_not_started"));
+      return;
+    }
+    const nextBaseUrl = signIn.baseUrl;
 
     setAuthBusy(true);
     setAuthError(null);
@@ -127,7 +102,8 @@ export function ForcedSigninPage({ developerMode }: ForcedSigninPageProps) {
 
     try {
       const result = await createDenClient({
-        baseUrl: nextBaseUrl,
+        baseUrl: signIn.baseUrl,
+        apiBaseUrl: signIn.apiBaseUrl,
       }).exchangeDesktopHandoff(parsed.grant);
       if (!result.token) {
         throw new Error(tr("den.error_no_token"));
@@ -139,7 +115,8 @@ export function ForcedSigninPage({ developerMode }: ForcedSigninPageProps) {
       }
 
       writeDenSettings({
-        baseUrl: nextBaseUrl,
+        baseUrl: signIn.baseUrl,
+        apiBaseUrl: signIn.apiBaseUrl,
         authToken: result.token,
         activeOrgId: null,
         activeOrgSlug: null,
@@ -166,7 +143,7 @@ export function ForcedSigninPage({ developerMode }: ForcedSigninPageProps) {
     } finally {
       setAuthBusy(false);
     }
-  }, [authBusy, baseUrl, developerMode, manualAuthInput, tr]);
+  }, [authBusy, developerMode, manualAuthInput, tr]);
 
   const applyBaseUrl = useCallback(async () => {
     const normalized = normalizeDenBaseUrl(baseUrlDraft);
