@@ -34,7 +34,7 @@ docker "${args[@]}"
 
 printf '\nBuilt micro-sandbox image: %s\n' "$IMAGE_REF"
 printf 'Run example:\n'
-printf '  docker run --rm -p 8787:8787 -e OPENWORK_CONNECT_HOST=127.0.0.1 %s\n' "$IMAGE_REF"
+printf '  docker run --rm -p 127.0.0.1:8787:8787 -e OPENWORK_CONNECT_HOST=127.0.0.1 %s\n' "$IMAGE_REF"
 printf 'Verify:\n'
 printf '  curl http://127.0.0.1:8787/health\n'
-printf '  curl -H "Authorization: Bearer microsandbox-token" http://127.0.0.1:8787/workspaces\n'
+printf '  curl -H "Authorization: Bearer <client token from the container logs>" http://127.0.0.1:8787/workspaces\n'

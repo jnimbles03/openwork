@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use microsandbox::{ExecEvent, NetworkPolicy, Sandbox};
 use reqwest::StatusCode;
 use std::env;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -24,10 +25,14 @@ async fn main() -> Result<()> {
         .unwrap_or(8787);
     let connect_host =
         env::var("OPENWORK_CONNECT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let client_token =
-        env::var("OPENWORK_TOKEN").unwrap_or_else(|_| "microsandbox-token".to_string());
-    let host_token =
-        env::var("OPENWORK_HOST_TOKEN").unwrap_or_else(|_| "microsandbox-host-token".to_string());
+    let client_token = token_from_env_or_random("OPENWORK_TOKEN")?;
+    let host_token = token_from_env_or_random("OPENWORK_HOST_TOKEN")?;
+    if client_token == host_token {
+        anyhow::bail!("OPENWORK_TOKEN and OPENWORK_HOST_TOKEN must be different");
+    }
+    let approval_mode = env::var("OPENWORK_APPROVAL_MODE")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
 
     println!(
         "Starting microsandbox `{name}` from image `{image}` on http://{connect_host}:{host_port}"
@@ -43,7 +48,6 @@ async fn main() -> Result<()> {
         .env("OPENWORK_CONNECT_HOST", &connect_host)
         .env("OPENWORK_TOKEN", &client_token)
         .env("OPENWORK_HOST_TOKEN", &host_token)
-        .env("OPENWORK_APPROVAL_MODE", "auto")
         .port(host_port, 8787)
         .volume("/workspace", |v| {
             v.bind(workspace_dir.to_string_lossy().as_ref())
@@ -51,6 +55,9 @@ async fn main() -> Result<()> {
         .volume("/data", |v| v.bind(data_dir.to_string_lossy().as_ref()))
         .network(|n| n.policy(NetworkPolicy::allow_all()));
 
+    if let Some(mode) = approval_mode.as_deref() {
+        builder = builder.env("OPENWORK_APPROVAL_MODE", mode);
+    }
     if replace {
         builder = builder.replace();
     }
@@ -119,6 +126,21 @@ fn env_flag(name: &str) -> bool {
         env::var(name).ok().as_deref(),
         Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
     )
+}
+
+fn token_from_env_or_random(name: &str) -> Result<String> {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        _ => random_token(),
+    }
+}
+
+fn random_token() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .context("failed to read random bytes from /dev/urandom for an OpenWork token")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn default_bind_dir(name: &str, suffix: &str) -> PathBuf {
@@ -200,8 +222,10 @@ mod tests {
         let image = env::var("OPENWORK_MICROSANDBOX_IMAGE")
             .unwrap_or_else(|_| "ttl.sh/openwork-microsandbox-11559:1d".to_string());
         let connect_host = "127.0.0.1";
-        let client_token = "some-shared-secret";
-        let host_token = "some-owner-secret";
+        let client_token = random_token()?;
+        let client_token = client_token.as_str();
+        let host_token = random_token()?;
+        let host_token = host_token.as_str();
         let host_port = 28787;
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -224,7 +248,6 @@ mod tests {
             .env("OPENWORK_CONNECT_HOST", connect_host)
             .env("OPENWORK_TOKEN", client_token)
             .env("OPENWORK_HOST_TOKEN", host_token)
-            .env("OPENWORK_APPROVAL_MODE", "auto")
             .port(host_port, 8787)
             .volume("/workspace", |v| {
                 v.bind(workspace_dir.to_string_lossy().as_ref())

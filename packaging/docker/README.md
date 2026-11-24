@@ -120,27 +120,33 @@ Build it from the repo root:
 ./scripts/build-microsandbox-openwork-image.sh
 ```
 
-Run it locally:
+Run it locally, published on loopback only:
 
 ```bash
-docker run --rm -p 8787:8787 \
+docker run --rm -p 127.0.0.1:8787:8787 \
   -e OPENWORK_CONNECT_HOST=127.0.0.1 \
   openwork-microsandbox:dev
 ```
 
 Defaults:
-- `OPENWORK_TOKEN=microsandbox-token`
-- `OPENWORK_HOST_TOKEN=microsandbox-host-token`
-- `OPENWORK_APPROVAL_MODE=auto`
+- `OPENWORK_TOKEN` / `OPENWORK_HOST_TOKEN` — when unset, the entrypoint generates a random 256-bit token for each at startup and prints them in the container logs. There are no built-in tokens.
+- `OPENWORK_APPROVAL_MODE` — `manual` (tool and file writes wait for host approval).
+- `OPENWORK_CORS_ORIGINS` — only `http://$OPENWORK_CONNECT_HOST:$OPENWORK_PORT`.
+
+To use your own tokens, export strong random values in your shell (for example from `openssl rand -hex 32`) and pass them through by name with `-e OPENWORK_TOKEN -e OPENWORK_HOST_TOKEN`, so they never appear in the command line.
+
+Only publish on a non-loopback interface (for example to reach the sandbox from another device) if you understand that anyone who obtains the client token can drive the agent against the mounted `/workspace`.
 
 Verification:
 - Health: `curl http://127.0.0.1:8787/health`
-- Authenticated API call: `curl -H "Authorization: Bearer microsandbox-token" http://127.0.0.1:8787/workspaces`
+- Authenticated API call: `curl -H "Authorization: Bearer <client token from the logs>" http://127.0.0.1:8787/workspaces`
 - Docker health: `docker inspect --format '{{json .State.Health}}' <container>`
 
 Useful overrides:
 - `OPENWORK_TOKEN` — set your own client bearer token
-- `OPENWORK_HOST_TOKEN` — set your own host/admin token
+- `OPENWORK_HOST_TOKEN` — set your own host/admin token (must differ from the client token)
+- `OPENWORK_APPROVAL_MODE` — `manual` (default) or `auto`
+- `OPENWORK_CORS_ORIGINS` — comma-separated browser origins allowed to call the server cross-origin
 - `OPENWORK_CONNECT_HOST` — host name embedded in the printed connect URL
 - `DOCKER_PLATFORM` — optional platform passed to `docker build`
 
