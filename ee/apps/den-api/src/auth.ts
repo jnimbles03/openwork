@@ -22,6 +22,7 @@ import { apiKey } from "@better-auth/api-key";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { APIError } from "better-call";
 import { betterAuth } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { emailOTP, jwt, organization } from "better-auth/plugins";
 
@@ -101,6 +102,90 @@ function hasMcpScope(scopes: readonly string[]) {
   return scopes.some((scope) => scope.startsWith("mcp:"));
 }
 
+// Organization metadata holds server-owned plan limits (see organization-limits.ts),
+// so clients must never be able to write it.
+function rejectClientOrganizationMetadata(organization: { metadata?: unknown }) {
+  if (organization.metadata !== undefined) {
+    throw new APIError("BAD_REQUEST", {
+      message: "Organization metadata is managed by OpenWork and cannot be set by clients.",
+    });
+  }
+}
+
+const organizationPlugin = organization({
+  ac: denOrganizationAccess,
+  roles: denOrganizationStaticRoles,
+  creatorRole: "owner",
+  requireEmailVerificationOnInvitation: true,
+  dynamicAccessControl: {
+    enabled: true,
+  },
+  teams: {
+    enabled: true,
+    defaultTeam: {
+      enabled: false,
+    },
+  },
+  async sendInvitationEmail(data) {
+    await sendDenOrganizationInvitationEmail({
+      email: data.email,
+      inviteLink: buildInvitationLink(data.id),
+      invitedByName: data.inviter.user.name ?? data.inviter.user.email,
+      invitedByEmail: data.inviter.user.email,
+      organizationName: data.organization.name,
+      role: data.role,
+    });
+  },
+  organizationHooks: {
+    beforeCreateOrganization: async ({ organization }) => {
+      rejectClientOrganizationMetadata(organization);
+    },
+    afterCreateOrganization: async ({ organization }) => {
+      await seedDefaultOrganizationRoles(
+        normalizeDenTypeId("organization", organization.id),
+      );
+    },
+    beforeUpdateOrganization: async ({ organization }) => {
+      rejectClientOrganizationMetadata(organization);
+    },
+    beforeRemoveMember: async ({ member }) => {
+      if (hasRole(member.role, "owner")) {
+        throw new APIError("BAD_REQUEST", {
+          message: "The organization owner cannot be removed.",
+        });
+      }
+    },
+    beforeUpdateMemberRole: async ({ member, newRole }) => {
+      if (hasRole(member.role, "owner")) {
+        throw new APIError("BAD_REQUEST", {
+          message: "The organization owner role cannot be changed.",
+        });
+      }
+
+      if (hasRole(newRole, "owner")) {
+        throw new APIError("BAD_REQUEST", {
+          message:
+            "Owner can only be assigned during organization creation.",
+        });
+      }
+    },
+  },
+});
+
+// Den owns organization, member, invitation, team, and role management through
+// its /v1 routes, which enforce plan limits and org policies that the plugin's
+// own endpoints skip. Over HTTP, only switching the active organization goes
+// straight to the plugin.
+const HTTP_ORGANIZATION_ENDPOINT_PATHS = new Set(["/organization/set-active"]);
+const blockedHttpOrganizationEndpointPaths = new Set(
+  Object.values(organizationPlugin.endpoints)
+    .map((endpoint) => endpoint.path)
+    .filter(
+      (path): path is string =>
+        typeof path === "string" && !HTTP_ORGANIZATION_ENDPOINT_PATHS.has(path),
+    ),
+);
+
 export const auth = betterAuth({
   baseURL: env.betterAuthUrl,
   secret: env.betterAuthSecret,
@@ -129,6 +214,15 @@ export const auth = betterAuth({
         },
       },
     },
+  },
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (ctx.request && blockedHttpOrganizationEndpointPaths.has(ctx.path)) {
+        throw new APIError("FORBIDDEN", {
+          message: "This organization action is only available through the Den API.",
+        });
+      }
+    }),
   },
   advanced: {
     ipAddress: {
@@ -234,59 +328,7 @@ export const auth = betterAuth({
         });
       },
     }),
-    organization({
-      ac: denOrganizationAccess,
-      roles: denOrganizationStaticRoles,
-      creatorRole: "owner",
-      requireEmailVerificationOnInvitation: true,
-      dynamicAccessControl: {
-        enabled: true,
-      },
-      teams: {
-        enabled: true,
-        defaultTeam: {
-          enabled: false,
-        },
-      },
-      async sendInvitationEmail(data) {
-        await sendDenOrganizationInvitationEmail({
-          email: data.email,
-          inviteLink: buildInvitationLink(data.id),
-          invitedByName: data.inviter.user.name ?? data.inviter.user.email,
-          invitedByEmail: data.inviter.user.email,
-          organizationName: data.organization.name,
-          role: data.role,
-        });
-      },
-      organizationHooks: {
-        afterCreateOrganization: async ({ organization }) => {
-          await seedDefaultOrganizationRoles(
-            normalizeDenTypeId("organization", organization.id),
-          );
-        },
-        beforeRemoveMember: async ({ member }) => {
-          if (hasRole(member.role, "owner")) {
-            throw new APIError("BAD_REQUEST", {
-              message: "The organization owner cannot be removed.",
-            });
-          }
-        },
-        beforeUpdateMemberRole: async ({ member, newRole }) => {
-          if (hasRole(member.role, "owner")) {
-            throw new APIError("BAD_REQUEST", {
-              message: "The organization owner role cannot be changed.",
-            });
-          }
-
-          if (hasRole(newRole, "owner")) {
-            throw new APIError("BAD_REQUEST", {
-              message:
-                "Owner can only be assigned during organization creation.",
-            });
-          }
-        },
-      },
-    }),
+    organizationPlugin,
     oauthProvider({
       loginPage: env.betterAuthUrl,
       consentPage: `${env.betterAuthUrl}/mcp/select-organization`,

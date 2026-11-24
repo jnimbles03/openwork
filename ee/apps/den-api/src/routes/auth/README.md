@@ -22,4 +22,6 @@ This folder owns authentication-related HTTP surfaces.
 ## Notes for future work
 
 - Keep browser auth routes mounted through Better Auth unless there is a strong reason to wrap them
+- Over HTTP, the Better Auth organization plugin only serves `/api/auth/organization/set-active`; its other endpoints return 403 (see `src/auth.ts`). Organization, member, invitation, team, and role changes go through the Den `/v1` routes, which enforce plan limits and org policies.
+- Organization `metadata` is server-owned (it holds plan limits). Better Auth organization create/update rejects any client-supplied `metadata`.
 - Put new auth-adjacent custom endpoints in this folder, not in `me/` or `org/`
