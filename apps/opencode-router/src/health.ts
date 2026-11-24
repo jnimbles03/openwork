@@ -151,39 +151,53 @@ export type HealthHandlers = {
   sendMessage?: (input: SendMessageInput) => Promise<SendMessageResult>;
 };
 
+function isLoopbackName(name: string): boolean {
+  return name === "127.0.0.1" || name === "localhost" || name === "::1";
+}
+
+function isAllowedHostHeader(hostHeader: string | undefined, bindHost: string): boolean {
+  const match = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::\d{1,5})?$/i.exec(hostHeader?.trim() ?? "");
+  if (!match) return false;
+  const name = match[1].toLowerCase().replace(/^\[|\]$/g, "");
+  if (isLoopbackName(name)) return true;
+  const bind = bindHost.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return bind !== "" && bind !== "0.0.0.0" && bind !== "::" && name === bind;
+}
+
+function hasJsonOrEmptyBody(req: http.IncomingMessage): boolean {
+  const contentType = req.headers["content-type"];
+  if (contentType !== undefined) {
+    return contentType.split(";")[0].trim().toLowerCase() === "application/json";
+  }
+  const length = req.headers["content-length"];
+  return req.headers["transfer-encoding"] === undefined && (length === undefined || length.trim() === "0");
+}
+
 export async function startHealthServer(
   port: number,
   getStatus: () => HealthSnapshot,
   logger: Logger,
   handlers: HealthHandlers = {},
 ) {
+  const host = (process.env.OPENCODE_ROUTER_HEALTH_HOST ?? "").trim() || "127.0.0.1";
+
   const server = http.createServer((req, res) => {
     void (async () => {
-      const requestOrigin = req.headers.origin;
-      if (requestOrigin) {
-        res.setHeader("Access-Control-Allow-Origin", requestOrigin);
-        res.setHeader("Vary", "Origin");
-      } else {
-        res.setHeader("Access-Control-Allow-Origin", "*");
-      }
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-
-      const requestHeaders = req.headers["access-control-request-headers"];
-      if (Array.isArray(requestHeaders)) {
-        res.setHeader("Access-Control-Allow-Headers", requestHeaders.join(", "));
-      } else if (typeof requestHeaders === "string" && requestHeaders.trim()) {
-        res.setHeader("Access-Control-Allow-Headers", requestHeaders);
-      } else {
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      }
-
-      if (req.headers["access-control-request-private-network"] === "true") {
-        res.setHeader("Access-Control-Allow-Private-Network", "true");
+      if (!isAllowedHostHeader(req.headers.host, host)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Host not allowed" }));
+        return;
       }
 
       if (req.method === "OPTIONS") {
-        res.writeHead(204);
-        res.end();
+        res.writeHead(405, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Method not allowed" }));
+        return;
+      }
+
+      if (req.method !== "GET" && req.method !== "HEAD" && !hasJsonOrEmptyBody(req)) {
+        res.writeHead(415, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Content-Type must be application/json" }));
         return;
       }
 
@@ -659,8 +673,6 @@ export async function startHealthServer(
       res.end(JSON.stringify({ ok: false, error: "Internal error" }));
     });
   });
-
-  const host = (process.env.OPENCODE_ROUTER_HEALTH_HOST ?? "").trim() || "127.0.0.1";
 
   try {
     await new Promise<void>((resolve, reject) => {
