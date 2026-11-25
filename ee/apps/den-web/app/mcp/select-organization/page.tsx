@@ -2,6 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import {
+  OAuthClientDisclosure,
+  canAuthorizeOAuthRequest,
+  readOAuthAuthorizationRequest,
+  useOAuthClient,
+} from "../_lib/oauth-client";
 
 type Organization = {
   id: string;
@@ -95,11 +101,13 @@ export default function McpSelectOrganizationPage() {
     if (typeof window === "undefined") return "";
     return window.location.search.replace(/^\?/, "");
   }, []);
-  const params = useMemo(() => new URLSearchParams(oauthQuery), [oauthQuery]);
-  const requestedScope = useMemo(
-    () => params.get("scope") ?? "openid profile email mcp:read",
-    [params],
+  const oauthRequest = useMemo(
+    () => readOAuthAuthorizationRequest(oauthQuery, "openid profile email mcp:read"),
+    [oauthQuery],
   );
+  const requestedScope = oauthRequest.scope;
+  const clientState = useOAuthClient(oauthRequest.clientId);
+  const canAuthorize = canAuthorizeOAuthRequest(oauthRequest, clientState);
   const selectedOrg = useMemo(
     () => orgs.find((org) => org.id === selectedOrgId) ?? null,
     [orgs, selectedOrgId],
@@ -136,7 +144,7 @@ export default function McpSelectOrganizationPage() {
   }, []);
 
   async function continueFlow() {
-    if (!selectedOrgId) return;
+    if (!selectedOrgId || !canAuthorize) return;
     setFlowState("submitting");
     setErrorMessage(null);
 
@@ -216,7 +224,7 @@ export default function McpSelectOrganizationPage() {
           ? "Finishing authorization and sending you back to the MCP client now."
           : flowState === "submitting"
             ? "Authorizing the MCP client..."
-            : "The MCP client will only see data for the workspace you choose.";
+            : "Check the application below, then choose the only workspace it can use.";
 
   const primaryLabel =
     flowState === "submitting"
@@ -254,11 +262,11 @@ export default function McpSelectOrganizationPage() {
                   MCP authorization
                 </span>
                 <h1 className="max-w-[14ch] text-[2rem] font-semibold leading-[0.97] tracking-[-0.05em] md:text-[2.6rem]">
-                  Pick the workspace this client can use.
+                  Only authorize applications you recognize.
                 </h1>
                 <p className="max-w-[34rem] text-[14px] leading-7 text-white/80">
-                  The MCP client only sees data and tools for the workspace you
-                  select here.
+                  Authorizing lets this application act as you in the workspace
+                  you select, with the access listed here.
                 </p>
               </div>
             </div>
@@ -274,6 +282,13 @@ export default function McpSelectOrganizationPage() {
               </h2>
               <p className="den-copy">{introCopy}</p>
             </div>
+
+            {flowState !== "error" ? (
+              <OAuthClientDisclosure
+                request={oauthRequest}
+                clientState={clientState}
+              />
+            ) : null}
 
             {flowState === "loading" ? (
               <div className="h-2 overflow-hidden rounded-full bg-[var(--dls-hover)]">
@@ -377,7 +392,8 @@ export default function McpSelectOrganizationPage() {
                   flowState === "loading" ||
                   flowState === "empty" ||
                   flowState === "error" ||
-                  !selectedOrgId
+                  !selectedOrgId ||
+                  !canAuthorize
                 }
               >
                 {primaryLabel}
