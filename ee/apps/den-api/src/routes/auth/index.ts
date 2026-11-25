@@ -16,35 +16,6 @@ function rewriteAuthRequest(request: Request, path: string) {
   return new Request(url, request)
 }
 
-async function rewriteMcpClientRegistrationRequest(request: Request, path: string) {
-  const url = new URL(request.url)
-  url.pathname = path
-
-  const headers = new Headers(request.headers)
-  const contentType = headers.get("content-type")?.toLowerCase() ?? ""
-  if (!contentType.includes("application/json")) {
-    return new Request(url, request)
-  }
-
-  const body = await request.json() as Record<string, unknown>
-  const scope = typeof body.scope === "string" ? body.scope : ""
-  const scopes = new Set(scope.split(/\s+/).filter(Boolean))
-  if (scopes.has("mcp:read") || scopes.has("mcp:write")) {
-    scopes.add("mcp:read")
-    scopes.add("mcp:write")
-    body.scope = Array.from(scopes).join(" ")
-  }
-
-  headers.set("content-type", "application/json")
-  headers.delete("content-length")
-
-  return new Request(url, {
-    method: request.method,
-    headers,
-    body: JSON.stringify(body),
-  })
-}
-
 async function rewriteMetadataOrigin(response: Response, origin: string) {
   const metadata = await response.json() as Record<string, unknown>
   const headers = new Headers(response.headers)
@@ -67,51 +38,38 @@ function requestOrigin(request: Request) {
   return new URL(request.url).origin
 }
 
-function readStoredClientScopes(scopes: string | null) {
-  if (!scopes) {
-    return []
-  }
-
-  try {
-    const parsed = JSON.parse(scopes) as unknown
-    if (Array.isArray(parsed)) return parsed.filter((entry): entry is string => typeof entry === "string")
-  } catch {}
-
-  return scopes.split(/\s+/).filter(Boolean)
-}
-
-async function ensureMcpClientScopes(request: Request) {
-  const url = new URL(request.url)
-  const requestedScopes = new Set((url.searchParams.get("scope") ?? "").split(/\s+/).filter(Boolean))
-  if (!requestedScopes.has("mcp:read") && !requestedScopes.has("mcp:write")) {
-    return
-  }
-
-  const clientId = url.searchParams.get("client_id")
-  if (!clientId) {
-    return
-  }
-
+async function readOAuthClientOwnerId(clientId: string) {
   const [client] = await db
-    .select({ scopes: OAuthClientTable.scopes })
+    .select({ userId: OAuthClientTable.userId })
     .from(OAuthClientTable)
     .where(eq(OAuthClientTable.clientId, clientId))
     .limit(1)
-  if (!client) {
-    return
+  return client?.userId ?? null
+}
+
+// Consent screens label a client "verified" only when the signed-in viewer
+// registered it. Anyone can register a client (dynamically or with their own
+// account), so ownership by some other account must not read as trust.
+async function withViewerOwnership(response: Response, viewerId: string | null) {
+  if (!response.ok) {
+    return response
   }
 
-  const scopes = new Set(readStoredClientScopes(client.scopes))
-  if (!scopes.has("mcp:read") && !scopes.has("mcp:write")) {
-    return
-  }
+  const client = await response.json() as Record<string, unknown>
+  const clientId = typeof client.client_id === "string" ? client.client_id : null
+  const ownerId = clientId ? await readOAuthClientOwnerId(clientId) : null
+  const headers = new Headers(response.headers)
+  headers.delete("content-length")
+  headers.set("content-type", "application/json")
+  headers.set("cache-control", "no-store")
 
-  scopes.add("mcp:read")
-  scopes.add("mcp:write")
-  await db
-    .update(OAuthClientTable)
-    .set({ scopes: JSON.stringify(Array.from(scopes)) })
-    .where(eq(OAuthClientTable.clientId, clientId))
+  return new Response(JSON.stringify({
+    ...client,
+    user_id: ownerId && viewerId && ownerId === viewerId ? ownerId : undefined,
+  }), {
+    status: response.status,
+    headers,
+  })
 }
 
 export function registerAuthRoutes<T extends { Variables: AuthContextVariables }>(app: Hono<T>) {
@@ -121,12 +79,8 @@ export function registerAuthRoutes<T extends { Variables: AuthContextVariables }
   app.get("/.well-known/openid-configuration/api/auth", async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
   app.get("/.well-known/oauth-authorization-server", async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/oauth-authorization-server")), requestOrigin(c.req.raw)))
   app.get("/.well-known/openid-configuration", async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/openid-configuration")), requestOrigin(c.req.raw)))
-  app.post("/register", async (c) => auth.handler(await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
-  app.post("/api/auth/oauth2/register", async (c) => auth.handler(await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
-  app.get("/api/auth/oauth2/authorize", async (c) => {
-    await ensureMcpClientScopes(c.req.raw)
-    return auth.handler(c.req.raw)
-  })
+  app.post("/register", async (c) => auth.handler(rewriteAuthRequest(c.req.raw, "/api/auth/oauth2/register")))
+  app.get("/api/auth/oauth2/public-client", async (c) => withViewerOwnership(await auth.handler(c.req.raw), c.get("user")?.id ?? null))
 
   app.on(
     ["GET", "POST"],
