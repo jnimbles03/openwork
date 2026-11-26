@@ -9,7 +9,7 @@ This folder owns authentication-related HTTP surfaces.
 
 ## Current responsibilities
 
-- forward Better Auth requests to `auth.handler(c.req.raw)`
+- forward Better Auth requests to `auth.handler` through `handleAuthRequest`, which replaces any caller-supplied client IP with the one resolved by `src/client-ip.ts`
 - create short-lived desktop handoff grants
 - exchange a valid handoff grant for a session token
 

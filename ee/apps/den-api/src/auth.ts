@@ -1,4 +1,5 @@
 import { getInitialActiveOrganizationIdForUser } from "./active-organization.js";
+import { DEN_CLIENT_IP_HEADER } from "./client-ip.js";
 import { db } from "./db.js";
 import { env } from "./env.js";
 import {
@@ -132,7 +133,7 @@ export const auth = betterAuth({
   },
   advanced: {
     ipAddress: {
-      ipAddressHeaders: ["x-forwarded-for", "x-real-ip", "cf-connecting-ip"],
+      ipAddressHeaders: [DEN_CLIENT_IP_HEADER],
       ipv6Subnet: 64,
     },
     database: {

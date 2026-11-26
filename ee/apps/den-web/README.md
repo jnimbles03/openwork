@@ -36,6 +36,9 @@ Frontend for `app.openworklabs.com`.
   - default: `https://app.openworklabs.com`
 - `DEN_AUTH_FALLBACK_BASE` (server-only): fallback Den origin used if `DEN_API_BASE` serves an HTML/5xx error.
   - default: `https://den-control-plane-openwork.onrender.com`
+- `DEN_WEB_PROXY_SECRET` (server-only): shared secret that lets Den API trust the client IP this proxy reports for auth rate limiting.
+  - must match `DEN_WEB_PROXY_SECRET` on Den API; without it, Den API rate limits proxied traffic by this app's egress address
+  - the proxy never forwards the browser's `X-Forwarded-For`; it reports only the right-most entry, which the hosting platform writes
 - `NEXT_PUBLIC_OPENWORK_APP_CONNECT_URL` (client): Base URL for "Open in App" links.
   - Example: `https://openworklabs.com/app`
   - The web panel appends `/connect-remote` and injects worker URL/token params automatically.
