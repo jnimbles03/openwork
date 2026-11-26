@@ -19,6 +19,7 @@ import {
   PluginAccessGrantTable,
   PluginConfigObjectTable,
   PluginTable,
+  TeamTable,
 } from "@openwork-ee/den-db/schema"
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
 import type { PluginArchActorContext, PluginArchResourceKind, PluginArchRole } from "./access.js"
@@ -646,6 +647,25 @@ async function ensureEditableConnectorInstance(context: PluginArchActorContext, 
   return row
 }
 
+async function ensureGrantSubjectInOrganization(organizationId: OrganizationId, value: AccessGrantWrite) {
+  if (value.orgMembershipId) {
+    const rows = await db
+      .select({ id: MemberTable.id })
+      .from(MemberTable)
+      .where(and(eq(MemberTable.id, value.orgMembershipId), eq(MemberTable.organizationId, organizationId)))
+      .limit(1)
+    if (!rows[0]) throw new PluginArchRouteFailure(404, "member_not_found", "Organization member not found.")
+  }
+  if (value.teamId) {
+    const rows = await db
+      .select({ id: TeamTable.id })
+      .from(TeamTable)
+      .where(and(eq(TeamTable.id, value.teamId), eq(TeamTable.organizationId, organizationId)))
+      .limit(1)
+    if (!rows[0]) throw new PluginArchRouteFailure(404, "team_not_found", "Team not found.")
+  }
+}
+
 async function upsertGrant(input: ResourceTarget & {
   context: PluginArchActorContext
   value: AccessGrantWrite
@@ -653,6 +673,7 @@ async function upsertGrant(input: ResourceTarget & {
   const createdAt = new Date()
   const createdByOrgMembershipId = input.context.organizationContext.currentMember.id
   const organizationId = input.context.organizationContext.organization.id
+  await ensureGrantSubjectInOrganization(organizationId, input.value)
 
   if (input.resourceKind === "config_object") {
     const existing = await db
@@ -660,6 +681,7 @@ async function upsertGrant(input: ResourceTarget & {
       .from(ConfigObjectAccessGrantTable)
       .where(and(
         eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId),
+        eq(ConfigObjectAccessGrantTable.organizationId, organizationId),
         input.value.orgMembershipId
           ? eq(ConfigObjectAccessGrantTable.orgMembershipId, input.value.orgMembershipId)
           : input.value.teamId
@@ -704,6 +726,7 @@ async function upsertGrant(input: ResourceTarget & {
       .from(MarketplaceAccessGrantTable)
       .where(and(
         eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId),
+        eq(MarketplaceAccessGrantTable.organizationId, organizationId),
         input.value.orgMembershipId
           ? eq(MarketplaceAccessGrantTable.orgMembershipId, input.value.orgMembershipId)
           : input.value.teamId
@@ -748,6 +771,7 @@ async function upsertGrant(input: ResourceTarget & {
       .from(PluginAccessGrantTable)
       .where(and(
         eq(PluginAccessGrantTable.pluginId, input.resourceId),
+        eq(PluginAccessGrantTable.organizationId, organizationId),
         input.value.orgMembershipId
           ? eq(PluginAccessGrantTable.orgMembershipId, input.value.orgMembershipId)
           : input.value.teamId
@@ -791,6 +815,7 @@ async function upsertGrant(input: ResourceTarget & {
     .from(ConnectorInstanceAccessGrantTable)
     .where(and(
       eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId),
+      eq(ConnectorInstanceAccessGrantTable.organizationId, organizationId),
       input.value.orgMembershipId
         ? eq(ConnectorInstanceAccessGrantTable.orgMembershipId, input.value.orgMembershipId)
         : input.value.teamId
@@ -831,11 +856,12 @@ async function upsertGrant(input: ResourceTarget & {
 
 async function removeGrant(input: GrantTarget & { context: PluginArchActorContext }) {
   const removedAt = new Date()
+  const organizationId = input.context.organizationContext.organization.id
   if (input.resourceKind === "config_object") {
     const rows = await db
       .select()
       .from(ConfigObjectAccessGrantTable)
-      .where(and(eq(ConfigObjectAccessGrantTable.id, input.grantId), eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId)))
+      .where(and(eq(ConfigObjectAccessGrantTable.id, input.grantId), eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId), eq(ConfigObjectAccessGrantTable.organizationId, organizationId)))
       .limit(1)
     if (!rows[0]) throw new PluginArchRouteFailure(404, "access_grant_not_found", "Access grant not found.")
     await db.update(ConfigObjectAccessGrantTable).set({ removedAt }).where(eq(ConfigObjectAccessGrantTable.id, input.grantId))
@@ -845,7 +871,7 @@ async function removeGrant(input: GrantTarget & { context: PluginArchActorContex
     const rows = await db
       .select()
       .from(MarketplaceAccessGrantTable)
-      .where(and(eq(MarketplaceAccessGrantTable.id, input.grantId), eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId)))
+      .where(and(eq(MarketplaceAccessGrantTable.id, input.grantId), eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId), eq(MarketplaceAccessGrantTable.organizationId, organizationId)))
       .limit(1)
     if (!rows[0]) throw new PluginArchRouteFailure(404, "access_grant_not_found", "Access grant not found.")
     await db.update(MarketplaceAccessGrantTable).set({ removedAt }).where(eq(MarketplaceAccessGrantTable.id, input.grantId))
@@ -855,7 +881,7 @@ async function removeGrant(input: GrantTarget & { context: PluginArchActorContex
     const rows = await db
       .select()
       .from(PluginAccessGrantTable)
-      .where(and(eq(PluginAccessGrantTable.id, input.grantId), eq(PluginAccessGrantTable.pluginId, input.resourceId)))
+      .where(and(eq(PluginAccessGrantTable.id, input.grantId), eq(PluginAccessGrantTable.pluginId, input.resourceId), eq(PluginAccessGrantTable.organizationId, organizationId)))
       .limit(1)
     if (!rows[0]) throw new PluginArchRouteFailure(404, "access_grant_not_found", "Access grant not found.")
     await db.update(PluginAccessGrantTable).set({ removedAt }).where(eq(PluginAccessGrantTable.id, input.grantId))
@@ -864,7 +890,7 @@ async function removeGrant(input: GrantTarget & { context: PluginArchActorContex
   const rows = await db
     .select()
     .from(ConnectorInstanceAccessGrantTable)
-    .where(and(eq(ConnectorInstanceAccessGrantTable.id, input.grantId), eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId)))
+    .where(and(eq(ConnectorInstanceAccessGrantTable.id, input.grantId), eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId), eq(ConnectorInstanceAccessGrantTable.organizationId, organizationId)))
     .limit(1)
   if (!rows[0]) throw new PluginArchRouteFailure(404, "access_grant_not_found", "Access grant not found.")
   await db.update(ConnectorInstanceAccessGrantTable).set({ removedAt }).where(eq(ConnectorInstanceAccessGrantTable.id, input.grantId))
@@ -935,8 +961,10 @@ export async function createConfigObject(input: {
     throw new PluginArchRouteFailure(400, "invalid_request", "Connector-managed config objects must be created through connector sync.")
   }
 
-  for (const pluginId of input.pluginIds ?? []) {
-    await requirePluginArchResourceRole({ context: input.context, resourceId: pluginId, resourceKind: "plugin", role: "editor" })
+  const targetPluginIds: PluginId[] = []
+  for (const pluginId of new Set(input.pluginIds ?? [])) {
+    const plugin = await ensureEditablePlugin(input.context, pluginId)
+    targetPluginIds.push(plugin.id)
   }
 
   const now = new Date()
@@ -993,7 +1021,7 @@ export async function createConfigObject(input: {
       teamId: null,
     })
 
-    for (const pluginId of input.pluginIds ?? []) {
+    for (const pluginId of targetPluginIds) {
       const existing = await tx
         .select({ id: PluginConfigObjectTable.id })
         .from(PluginConfigObjectTable)
@@ -1121,7 +1149,7 @@ export async function listConfigObjectPlugins(input: { context: PluginArchActorC
   const memberships = await db
     .select()
     .from(PluginConfigObjectTable)
-    .where(eq(PluginConfigObjectTable.configObjectId, configObject.id))
+    .where(and(eq(PluginConfigObjectTable.configObjectId, configObject.id), eq(PluginConfigObjectTable.organizationId, configObject.organizationId)))
     .orderBy(desc(PluginConfigObjectTable.createdAt))
 
   const serializedConfigObject = serializeConfigObject(configObject, latest.get(configObject.id) ?? null)
@@ -1182,20 +1210,21 @@ export async function removeConfigObjectFromPlugin(input: { context: PluginArchA
 
 export async function listResourceAccess(input: { context: PluginArchActorContext } & ResourceTarget) {
   await requirePluginArchResourceRole({ context: input.context, resourceId: input.resourceId, resourceKind: input.resourceKind, role: "manager" })
+  const organizationId = input.context.organizationContext.organization.id
 
   if (input.resourceKind === "config_object") {
-    const rows = await db.select().from(ConfigObjectAccessGrantTable).where(eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId)).orderBy(desc(ConfigObjectAccessGrantTable.createdAt))
+    const rows = await db.select().from(ConfigObjectAccessGrantTable).where(and(eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId), eq(ConfigObjectAccessGrantTable.organizationId, organizationId))).orderBy(desc(ConfigObjectAccessGrantTable.createdAt))
     return { items: rows.map((row) => serializeAccessGrant(row)), nextCursor: null }
   }
   if (input.resourceKind === "marketplace") {
-    const rows = await db.select().from(MarketplaceAccessGrantTable).where(eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId)).orderBy(desc(MarketplaceAccessGrantTable.createdAt))
+    const rows = await db.select().from(MarketplaceAccessGrantTable).where(and(eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId), eq(MarketplaceAccessGrantTable.organizationId, organizationId))).orderBy(desc(MarketplaceAccessGrantTable.createdAt))
     return { items: rows.map((row) => serializeAccessGrant(row)), nextCursor: null }
   }
   if (input.resourceKind === "plugin") {
-    const rows = await db.select().from(PluginAccessGrantTable).where(eq(PluginAccessGrantTable.pluginId, input.resourceId)).orderBy(desc(PluginAccessGrantTable.createdAt))
+    const rows = await db.select().from(PluginAccessGrantTable).where(and(eq(PluginAccessGrantTable.pluginId, input.resourceId), eq(PluginAccessGrantTable.organizationId, organizationId))).orderBy(desc(PluginAccessGrantTable.createdAt))
     return { items: rows.map((row) => serializeAccessGrant(row)), nextCursor: null }
   }
-  const rows = await db.select().from(ConnectorInstanceAccessGrantTable).where(eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId)).orderBy(desc(ConnectorInstanceAccessGrantTable.createdAt))
+  const rows = await db.select().from(ConnectorInstanceAccessGrantTable).where(and(eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId), eq(ConnectorInstanceAccessGrantTable.organizationId, organizationId))).orderBy(desc(ConnectorInstanceAccessGrantTable.createdAt))
   return { items: rows.map((row) => serializeAccessGrant(row)), nextCursor: null }
 }
 
@@ -1248,7 +1277,7 @@ export async function listPlugins(input: { context: PluginArchActorContext; curs
   const memberships = await db
     .select({ pluginId: PluginConfigObjectTable.pluginId, count: PluginConfigObjectTable.id })
     .from(PluginConfigObjectTable)
-    .where(isNull(PluginConfigObjectTable.removedAt))
+    .where(and(eq(PluginConfigObjectTable.organizationId, input.context.organizationContext.organization.id), isNull(PluginConfigObjectTable.removedAt)))
 
   const counts = memberships.reduce((accumulator, row) => {
     accumulator.set(row.pluginId, (accumulator.get(row.pluginId) ?? 0) + 1)
@@ -1277,7 +1306,7 @@ export async function listPlugins(input: { context: PluginArchActorContext; curs
 
 export async function getPluginDetail(context: PluginArchActorContext, pluginId: PluginId) {
   const row = await ensureVisiblePlugin(context, pluginId)
-  const memberships = await db.select({ id: PluginConfigObjectTable.id }).from(PluginConfigObjectTable).where(and(eq(PluginConfigObjectTable.pluginId, row.id), isNull(PluginConfigObjectTable.removedAt)))
+  const memberships = await db.select({ id: PluginConfigObjectTable.id }).from(PluginConfigObjectTable).where(and(eq(PluginConfigObjectTable.pluginId, row.id), eq(PluginConfigObjectTable.organizationId, row.organizationId), isNull(PluginConfigObjectTable.removedAt)))
   const marketplaceMembers = await collectPluginMarketplaces(context.organizationContext.organization.id, [row.id])
   return serializePlugin(row, memberships.length, marketplaceMembers.get(row.id) ?? [])
 }
@@ -1338,18 +1367,25 @@ export async function setPluginLifecycle(input: { action: "archive" | "restore";
 }
 
 export async function listPluginMemberships(input: { context: PluginArchActorContext; pluginId: PluginId; includeConfigObjects?: boolean; onlyActive?: boolean }) {
-  await ensureVisiblePlugin(input.context, input.pluginId)
-  const memberships = await db
-    .select()
+  const plugin = await ensureVisiblePlugin(input.context, input.pluginId)
+  const membershipRows = await db
+    .select({ membership: PluginConfigObjectTable, configObject: ConfigObjectTable })
     .from(PluginConfigObjectTable)
-    .where(input.onlyActive ? and(eq(PluginConfigObjectTable.pluginId, input.pluginId), isNull(PluginConfigObjectTable.removedAt)) : eq(PluginConfigObjectTable.pluginId, input.pluginId))
+    .innerJoin(ConfigObjectTable, eq(PluginConfigObjectTable.configObjectId, ConfigObjectTable.id))
+    .where(and(
+      eq(PluginConfigObjectTable.pluginId, plugin.id),
+      eq(PluginConfigObjectTable.organizationId, plugin.organizationId),
+      eq(ConfigObjectTable.organizationId, plugin.organizationId),
+      input.onlyActive ? isNull(PluginConfigObjectTable.removedAt) : undefined,
+    ))
     .orderBy(desc(PluginConfigObjectTable.createdAt))
+  const memberships = membershipRows.map((row) => row.membership)
 
   if (!input.includeConfigObjects) {
     return { items: memberships.map((membership) => serializeMembership(membership)), nextCursor: null }
   }
 
-  const configObjects = await db.select().from(ConfigObjectTable).where(inArray(ConfigObjectTable.id, memberships.map((membership) => membership.configObjectId)))
+  const configObjects = membershipRows.map((row) => row.configObject)
   const latestVersions = await getLatestVersions(configObjects.map((row) => row.id))
   const byId = new Map<string, ReturnType<typeof serializeConfigObject>>(configObjects.map((row) => [row.id, serializeConfigObject(row, latestVersions.get(row.id) ?? null)]))
   return { items: memberships.map((membership) => serializeMembership(membership, byId.get(membership.configObjectId))), nextCursor: null }
@@ -1373,7 +1409,7 @@ export async function listMarketplaces(input: { context: PluginArchActorContext;
   const memberships = await db
     .select({ marketplaceId: MarketplacePluginTable.marketplaceId, count: MarketplacePluginTable.id })
     .from(MarketplacePluginTable)
-    .where(isNull(MarketplacePluginTable.removedAt))
+    .where(and(eq(MarketplacePluginTable.organizationId, input.context.organizationContext.organization.id), isNull(MarketplacePluginTable.removedAt)))
 
   const counts = memberships.reduce((accumulator, row) => {
     accumulator.set(row.marketplaceId, (accumulator.get(row.marketplaceId) ?? 0) + 1)
@@ -1400,7 +1436,7 @@ export async function getMarketplaceDetail(context: PluginArchActorContext, mark
   const memberships = await db
     .select({ id: MarketplacePluginTable.id })
     .from(MarketplacePluginTable)
-    .where(and(eq(MarketplacePluginTable.marketplaceId, row.id), isNull(MarketplacePluginTable.removedAt)))
+    .where(and(eq(MarketplacePluginTable.marketplaceId, row.id), eq(MarketplacePluginTable.organizationId, row.organizationId), isNull(MarketplacePluginTable.removedAt)))
   return serializeMarketplace(row, memberships.length)
 }
 
@@ -1460,20 +1496,25 @@ export async function setMarketplaceLifecycle(input: { action: "archive" | "rest
 }
 
 export async function listMarketplaceMemberships(input: { context: PluginArchActorContext; includePlugins?: boolean; marketplaceId: MarketplaceId; onlyActive?: boolean }) {
-  await ensureVisibleMarketplace(input.context, input.marketplaceId)
-  const memberships = await db
-    .select()
+  const marketplace = await ensureVisibleMarketplace(input.context, input.marketplaceId)
+  const membershipRows = await db
+    .select({ membership: MarketplacePluginTable, plugin: PluginTable })
     .from(MarketplacePluginTable)
-    .where(input.onlyActive ? and(eq(MarketplacePluginTable.marketplaceId, input.marketplaceId), isNull(MarketplacePluginTable.removedAt)) : eq(MarketplacePluginTable.marketplaceId, input.marketplaceId))
+    .innerJoin(PluginTable, eq(MarketplacePluginTable.pluginId, PluginTable.id))
+    .where(and(
+      eq(MarketplacePluginTable.marketplaceId, marketplace.id),
+      eq(MarketplacePluginTable.organizationId, marketplace.organizationId),
+      eq(PluginTable.organizationId, marketplace.organizationId),
+      input.onlyActive ? isNull(MarketplacePluginTable.removedAt) : undefined,
+    ))
     .orderBy(desc(MarketplacePluginTable.createdAt))
+  const memberships = membershipRows.map((row) => row.membership)
 
   if (!input.includePlugins) {
     return { items: memberships.map((membership) => serializeMarketplaceMembership(membership)), nextCursor: null }
   }
 
-  const plugins = memberships.length === 0
-    ? []
-    : await db.select().from(PluginTable).where(inArray(PluginTable.id, memberships.map((membership) => membership.pluginId)))
+  const plugins = membershipRows.map((row) => row.plugin)
   const byId = new Map<string, ReturnType<typeof serializePlugin>>(plugins.map((row) => [row.id, serializePlugin(row)]))
   return { items: memberships.map((membership) => serializeMarketplaceMembership(membership, byId.get(membership.pluginId))), nextCursor: null }
 }
@@ -1493,20 +1534,27 @@ export async function getMarketplaceResolved(input: { context: PluginArchActorCo
   const memberships = await db
     .select()
     .from(MarketplacePluginTable)
-    .where(and(eq(MarketplacePluginTable.marketplaceId, marketplaceRow.id), isNull(MarketplacePluginTable.removedAt)))
+    .where(and(eq(MarketplacePluginTable.marketplaceId, marketplaceRow.id), eq(MarketplacePluginTable.organizationId, organizationId), isNull(MarketplacePluginTable.removedAt)))
     .orderBy(desc(MarketplacePluginTable.createdAt))
 
-  const pluginIds = memberships.map((membership) => membership.pluginId)
-  const pluginRows = pluginIds.length === 0
+  const memberPluginIds = memberships.map((membership) => membership.pluginId)
+  const pluginRows = memberPluginIds.length === 0
     ? []
-    : await db.select().from(PluginTable).where(inArray(PluginTable.id, pluginIds))
+    : await db.select().from(PluginTable).where(and(inArray(PluginTable.id, memberPluginIds), eq(PluginTable.organizationId, organizationId)))
+  const pluginIds = pluginRows.map((row) => row.id)
 
   const activePluginMemberships = pluginIds.length === 0
     ? []
     : await db
       .select({ pluginId: PluginConfigObjectTable.pluginId, configObjectId: PluginConfigObjectTable.configObjectId })
       .from(PluginConfigObjectTable)
-      .where(and(inArray(PluginConfigObjectTable.pluginId, pluginIds), isNull(PluginConfigObjectTable.removedAt)))
+      .innerJoin(ConfigObjectTable, eq(PluginConfigObjectTable.configObjectId, ConfigObjectTable.id))
+      .where(and(
+        inArray(PluginConfigObjectTable.pluginId, pluginIds),
+        eq(PluginConfigObjectTable.organizationId, organizationId),
+        eq(ConfigObjectTable.organizationId, organizationId),
+        isNull(PluginConfigObjectTable.removedAt),
+      ))
   const memberCounts = new Map<string, number>()
   for (const entry of activePluginMemberships) {
     memberCounts.set(entry.pluginId, (memberCounts.get(entry.pluginId) ?? 0) + 1)
@@ -1518,7 +1566,7 @@ export async function getMarketplaceResolved(input: { context: PluginArchActorCo
     const rows = await db
       .select({ id: ConfigObjectTable.id, objectType: ConfigObjectTable.objectType })
       .from(ConfigObjectTable)
-      .where(inArray(ConfigObjectTable.id, configObjectIds))
+      .where(and(inArray(ConfigObjectTable.id, configObjectIds), eq(ConfigObjectTable.organizationId, organizationId)))
     for (const row of rows) {
       configObjectTypeById.set(row.id, row.objectType)
     }
@@ -1555,13 +1603,13 @@ export async function getMarketplaceResolved(input: { context: PluginArchActorCo
       const [instance] = await db
         .select()
         .from(ConnectorInstanceTable)
-        .where(eq(ConnectorInstanceTable.id, connectorInstanceIds[0]))
+        .where(and(eq(ConnectorInstanceTable.id, connectorInstanceIds[0]), eq(ConnectorInstanceTable.organizationId, organizationId)))
         .limit(1)
       if (instance) {
         const [account] = await db
           .select()
           .from(ConnectorAccountTable)
-          .where(eq(ConnectorAccountTable.id, instance.connectorAccountId))
+          .where(and(eq(ConnectorAccountTable.id, instance.connectorAccountId), eq(ConnectorAccountTable.organizationId, organizationId)))
           .limit(1)
         const [target] = await db
           .select()
@@ -2009,20 +2057,20 @@ export async function getConnectorInstanceConfiguration(input: { connectorInstan
   const pluginIds = [...new Set(mappings.map((row) => row.pluginId).filter((value): value is PluginId => Boolean(value)))]
   const pluginRows = pluginIds.length === 0
     ? []
-    : await db.select().from(PluginTable).where(inArray(PluginTable.id, pluginIds))
+    : await db.select().from(PluginTable).where(and(inArray(PluginTable.id, pluginIds), eq(PluginTable.organizationId, instance.organizationId)))
   const memberships = pluginIds.length === 0
     ? []
     : await db
       .select({ pluginId: PluginConfigObjectTable.pluginId, configObjectId: PluginConfigObjectTable.configObjectId })
       .from(PluginConfigObjectTable)
-      .where(and(inArray(PluginConfigObjectTable.pluginId, pluginIds), isNull(PluginConfigObjectTable.removedAt)))
+      .where(and(inArray(PluginConfigObjectTable.pluginId, pluginIds), eq(PluginConfigObjectTable.organizationId, instance.organizationId), isNull(PluginConfigObjectTable.removedAt)))
   const configObjectIds = [...new Set(memberships.map((entry) => entry.configObjectId))]
   const configObjectTypeById = new Map<string, string>()
   if (configObjectIds.length > 0) {
     const rows = await db
       .select({ id: ConfigObjectTable.id, objectType: ConfigObjectTable.objectType })
       .from(ConfigObjectTable)
-      .where(inArray(ConfigObjectTable.id, configObjectIds))
+      .where(and(inArray(ConfigObjectTable.id, configObjectIds), eq(ConfigObjectTable.organizationId, instance.organizationId)))
     for (const row of rows) {
       configObjectTypeById.set(row.id, row.objectType)
     }
