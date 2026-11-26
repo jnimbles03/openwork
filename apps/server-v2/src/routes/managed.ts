@@ -1,5 +1,6 @@
 import type { Context, Hono } from "hono";
 import { describeRoute } from "hono-openapi";
+import { HTTPException } from "hono/http-exception";
 import { getRequestContext, type AppBindings } from "../context/request-context.js";
 import { buildSuccessResponse, RouteError } from "../http.js";
 import { jsonResponse, withCommonErrorResponses } from "../openapi.js";
@@ -43,8 +44,18 @@ import {
 } from "../schemas/managed.js";
 import { routePaths } from "./route-paths.js";
 
-function parseJsonBody<T>(schema: { parse(input: unknown): T }, request: Request) {
-  return request.json().then((body) => schema.parse(body));
+// Only application/json bodies are accepted so cross-site "simple" requests
+// (text/plain, form posts) cannot drive state changes without a CORS preflight.
+async function readJsonBody(request: Request): Promise<unknown> {
+  const mediaType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (mediaType !== "application/json") {
+    throw new HTTPException(415, { message: "Request body must be sent with Content-Type: application/json." });
+  }
+  return await request.json();
+}
+
+async function parseJsonBody<T>(schema: { parse(input: unknown): T }, request: Request) {
+  return schema.parse(await readJsonBody(request));
 }
 
 function requireVisible(c: Context<AppBindings>) {
@@ -57,6 +68,17 @@ function requireWorkspace(c: Context<AppBindings>) {
   const requestContext = requireVisible(c);
   const workspaceId = c.req.param("workspaceId") ?? "";
   return { requestContext, workspaceId };
+}
+
+function requireReadableWorkspace(c: Context<AppBindings>) {
+  const { requestContext, workspaceId } = requireWorkspace(c);
+  const workspace = requestContext.services.workspaceRegistry.getById(workspaceId, {
+    includeHidden: requestContext.actor.kind === "host",
+  });
+  if (!workspace) {
+    throw new HTTPException(404, { message: `Workspace not found: ${workspaceId}` });
+  }
+  return { requestContext, workspace };
 }
 
 function addCompatibilityRoute(
@@ -716,36 +738,67 @@ export function registerManagedRoutes(app: Hono<AppBindings>) {
       requireWorkspace(c);
       return c.json(getRequestContext(c).services.router.getHealth());
     });
-    addCompatibilityRoute(app, "POST", `${basePath}/telegram-token`, async (c) => c.json(await getRequestContext(c).services.router.setTelegramToken((await parseJsonBody(routerTelegramWriteSchema, c.req.raw)).token)));
-    addCompatibilityRoute(app, "GET", `${basePath}/telegram`, async (c) => c.json(await getRequestContext(c).services.router.getTelegramInfo()));
-    addCompatibilityRoute(app, "POST", `${basePath}/telegram-enabled`, async (c) => {
-      const body = await c.req.json();
-      return c.json(await getRequestContext(c).services.router.setTelegramEnabled(body.enabled === true, { clearToken: body.clearToken === true }));
+    addCompatibilityRoute(app, "POST", `${basePath}/telegram-token`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      const body = await parseJsonBody(routerTelegramWriteSchema, c.req.raw);
+      return c.json(await requestContext.services.router.setTelegramToken(body.token));
     });
-    addCompatibilityRoute(app, "GET", `${basePath}/identities/telegram`, (c) => c.json(getRequestContext(c).services.router.listTelegramIdentities()));
-    addCompatibilityRoute(app, "POST", `${basePath}/identities/telegram`, async (c) => c.json(await getRequestContext(c).services.router.upsertTelegramIdentity(await parseJsonBody(routerTelegramWriteSchema, c.req.raw))));
-    addCompatibilityRoute(app, "DELETE", `${basePath}/identities/telegram/:identityId`, async (c) => c.json(await getRequestContext(c).services.router.deleteTelegramIdentity(c.req.param("identityId") ?? "")));
-    addCompatibilityRoute(app, "GET", `${basePath}/identities/slack`, (c) => c.json(getRequestContext(c).services.router.listSlackIdentities()));
-    addCompatibilityRoute(app, "POST", `${basePath}/identities/slack`, async (c) => c.json(await getRequestContext(c).services.router.upsertSlackIdentity(await parseJsonBody(routerSlackWriteSchema, c.req.raw))));
-    addCompatibilityRoute(app, "DELETE", `${basePath}/identities/slack/:identityId`, async (c) => c.json(await getRequestContext(c).services.router.deleteSlackIdentity(c.req.param("identityId") ?? "")));
-    addCompatibilityRoute(app, "POST", `${basePath}/slack-tokens`, async (c) => {
+    addCompatibilityRoute(app, "GET", `${basePath}/telegram`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      return c.json(await requestContext.services.router.getTelegramInfo());
+    });
+    addCompatibilityRoute(app, "POST", `${basePath}/telegram-enabled`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      const body = (await readJsonBody(c.req.raw) ?? {}) as { clearToken?: unknown; enabled?: unknown };
+      return c.json(await requestContext.services.router.setTelegramEnabled(body.enabled === true, { clearToken: body.clearToken === true }));
+    });
+    addCompatibilityRoute(app, "GET", `${basePath}/identities/telegram`, (c) => {
+      const { requestContext } = requireWorkspace(c);
+      return c.json(requestContext.services.router.listTelegramIdentities());
+    });
+    addCompatibilityRoute(app, "POST", `${basePath}/identities/telegram`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      const body = await parseJsonBody(routerTelegramWriteSchema, c.req.raw);
+      return c.json(await requestContext.services.router.upsertTelegramIdentity(body));
+    });
+    addCompatibilityRoute(app, "DELETE", `${basePath}/identities/telegram/:identityId`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      return c.json(await requestContext.services.router.deleteTelegramIdentity(c.req.param("identityId") ?? ""));
+    });
+    addCompatibilityRoute(app, "GET", `${basePath}/identities/slack`, (c) => {
+      const { requestContext } = requireWorkspace(c);
+      return c.json(requestContext.services.router.listSlackIdentities());
+    });
+    addCompatibilityRoute(app, "POST", `${basePath}/identities/slack`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
       const body = await parseJsonBody(routerSlackWriteSchema, c.req.raw);
-      return c.json(await getRequestContext(c).services.router.setSlackTokens(body.botToken, body.appToken));
+      return c.json(await requestContext.services.router.upsertSlackIdentity(body));
+    });
+    addCompatibilityRoute(app, "DELETE", `${basePath}/identities/slack/:identityId`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      return c.json(await requestContext.services.router.deleteSlackIdentity(c.req.param("identityId") ?? ""));
+    });
+    addCompatibilityRoute(app, "POST", `${basePath}/slack-tokens`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      const body = await parseJsonBody(routerSlackWriteSchema, c.req.raw);
+      return c.json(await requestContext.services.router.setSlackTokens(body.botToken, body.appToken));
     });
     addCompatibilityRoute(app, "GET", `${basePath}/bindings`, (c) => {
-      const requestContext = getRequestContext(c);
+      const { requestContext } = requireWorkspace(c);
       const url = new URL(c.req.url);
       return c.json(requestContext.services.router.listBindings({ channel: url.searchParams.get("channel") ?? undefined, identityId: url.searchParams.get("identityId") ?? undefined }));
     });
     addCompatibilityRoute(app, "POST", `${basePath}/bindings`, async (c) => {
-      const requestContext = getRequestContext(c);
+      const { requestContext } = requireWorkspace(c);
       const body = await parseJsonBody(routerBindingWriteSchema, c.req.raw);
-      const workspaceId = c.req.param("workspaceId") ?? "";
-      const workspace = requestContext.services.workspaceRegistry.getById(workspaceId, { includeHidden: true });
-      const directory = body.directory?.trim() || workspace?.backend.local?.dataDir || "";
+      const directory = body.directory?.trim() || requireReadableWorkspace(c).workspace.backend.local?.dataDir || "";
       return c.json(await requestContext.services.router.setBinding({ channel: body.channel, directory, identityId: body.identityId, peerId: body.peerId }));
     });
-    addCompatibilityRoute(app, "POST", `${basePath}/send`, async (c) => c.json(await getRequestContext(c).services.router.sendMessage(await parseJsonBody(routerSendWriteSchema, c.req.raw))));
+    addCompatibilityRoute(app, "POST", `${basePath}/send`, async (c) => {
+      const { requestContext } = requireWorkspace(c);
+      const body = await parseJsonBody(routerSendWriteSchema, c.req.raw);
+      return c.json(await requestContext.services.router.sendMessage(body));
+    });
   }
 
   addCompatibilityRoute(app, "GET", "/workspace/:workspaceId/export", async (c) => {
@@ -759,6 +812,6 @@ export function registerManagedRoutes(app: Hono<AppBindings>) {
   });
   addCompatibilityRoute(app, "POST", "/workspace/:workspaceId/import", async (c) => {
     const { requestContext, workspaceId } = requireWorkspace(c);
-    return c.json(await requestContext.services.managed.importWorkspace(workspaceId, await c.req.json()));
+    return c.json(await requestContext.services.managed.importWorkspace(workspaceId, await parseJsonBody(workspaceImportWriteSchema, c.req.raw)));
   });
 }
