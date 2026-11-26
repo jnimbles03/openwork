@@ -25,6 +25,7 @@ export type PluginArchActorContext = {
 }
 
 type MemberId = OrganizationContext["currentMember"]["id"]
+type OrganizationId = OrganizationContext["organization"]["id"]
 type TeamId = MemberTeamSummary["id"]
 type ConfigObjectId = typeof ConfigObjectTable.$inferSelect.id
 type MarketplaceId = typeof MarketplaceTable.$inferSelect.id
@@ -35,6 +36,7 @@ type MarketplaceGrantRow = Pick<typeof MarketplaceAccessGrantTable.$inferSelect,
 type PluginGrantRow = Pick<typeof PluginAccessGrantTable.$inferSelect, "orgMembershipId" | "orgWide" | "removedAt" | "role" | "teamId">
 type ConnectorInstanceGrantRow = Pick<typeof ConnectorInstanceAccessGrantTable.$inferSelect, "orgMembershipId" | "orgWide" | "removedAt" | "role" | "teamId">
 type GrantRow = ConfigObjectGrantRow | MarketplaceGrantRow | PluginGrantRow | ConnectorInstanceGrantRow
+type ScopedGrantRow = GrantRow & { organizationId: OrganizationId }
 
 type MarketplaceResourceLookupInput = {
   context: PluginArchActorContext
@@ -70,8 +72,8 @@ type RequireResourceRoleInput = ResourceLookupInput & { role: PluginArchRole }
 
 export class PluginArchAuthorizationError extends Error {
   constructor(
-    readonly status: 403,
-    readonly error: "forbidden",
+    readonly status: 403 | 404,
+    readonly error: string,
     message: string,
   ) {
     super(message)
@@ -85,10 +87,21 @@ const rolePriority: Record<PluginArchRole, number> = {
   manager: 3,
 }
 
+const resourceLabels: Record<PluginArchResourceKind, string> = {
+  config_object: "Config object",
+  connector_instance: "Connector instance",
+  marketplace: "Marketplace",
+  plugin: "Plugin",
+}
+
 function maxRole(current: PluginArchRole | null, candidate: PluginArchRole | null) {
   if (!candidate) return current
   if (!current) return candidate
   return rolePriority[candidate] > rolePriority[current] ? candidate : current
+}
+
+function actorOrganizationId(context: PluginArchActorContext): OrganizationId {
+  return context.organizationContext.organization.id
 }
 
 export function isPluginArchOrgAdmin(context: PluginArchActorContext) {
@@ -122,15 +135,55 @@ export function resolvePluginArchGrantRole(input: {
   return resolved
 }
 
-async function resolveGrantRole(input: {
-  grants: GrantRow[]
+function resolveGrantRole(input: {
+  grants: ScopedGrantRow[]
   context: PluginArchActorContext
 }) {
+  const organizationId = actorOrganizationId(input.context)
   return resolvePluginArchGrantRole({
-    grants: input.grants,
+    // Grants (including org-wide ones) only ever apply to members of the grant's own organization.
+    grants: input.grants.filter((grant) => grant.organizationId === organizationId),
     memberId: input.context.organizationContext.currentMember.id,
     teamIds: input.context.memberTeams.map((team) => team.id),
   })
+}
+
+async function isResourceInActorOrganization(input: ResourceLookupInput) {
+  const organizationId = actorOrganizationId(input.context)
+
+  if (input.resourceKind === "marketplace") {
+    const rows = await db
+      .select({ id: MarketplaceTable.id })
+      .from(MarketplaceTable)
+      .where(and(eq(MarketplaceTable.id, input.resourceId), eq(MarketplaceTable.organizationId, organizationId)))
+      .limit(1)
+    return rows.length > 0
+  }
+
+  if (input.resourceKind === "plugin") {
+    const rows = await db
+      .select({ id: PluginTable.id })
+      .from(PluginTable)
+      .where(and(eq(PluginTable.id, input.resourceId), eq(PluginTable.organizationId, organizationId)))
+      .limit(1)
+    return rows.length > 0
+  }
+
+  if (input.resourceKind === "connector_instance") {
+    const rows = await db
+      .select({ id: ConnectorInstanceTable.id })
+      .from(ConnectorInstanceTable)
+      .where(and(eq(ConnectorInstanceTable.id, input.resourceId), eq(ConnectorInstanceTable.organizationId, organizationId)))
+      .limit(1)
+    return rows.length > 0
+  }
+
+  const rows = await db
+    .select({ id: ConfigObjectTable.id })
+    .from(ConfigObjectTable)
+    .where(and(eq(ConfigObjectTable.id, input.resourceId), eq(ConfigObjectTable.organizationId, organizationId)))
+    .limit(1)
+  return rows.length > 0
 }
 
 async function resolvePluginRoleForIds(context: PluginArchActorContext, pluginIds: PluginId[]) {
@@ -144,6 +197,7 @@ async function resolvePluginRoleForIds(context: PluginArchActorContext, pluginId
 
   const grants = await db
     .select({
+      organizationId: PluginAccessGrantTable.organizationId,
       orgMembershipId: PluginAccessGrantTable.orgMembershipId,
       orgWide: PluginAccessGrantTable.orgWide,
       removedAt: PluginAccessGrantTable.removedAt,
@@ -151,7 +205,7 @@ async function resolvePluginRoleForIds(context: PluginArchActorContext, pluginId
       teamId: PluginAccessGrantTable.teamId,
     })
     .from(PluginAccessGrantTable)
-    .where(inArray(PluginAccessGrantTable.pluginId, pluginIds))
+    .where(and(inArray(PluginAccessGrantTable.pluginId, pluginIds), eq(PluginAccessGrantTable.organizationId, actorOrganizationId(context))))
 
   return resolveGrantRole({ context, grants })
 }
@@ -167,6 +221,7 @@ async function resolveMarketplaceRoleForIds(context: PluginArchActorContext, mar
 
   const grants = await db
     .select({
+      organizationId: MarketplaceAccessGrantTable.organizationId,
       orgMembershipId: MarketplaceAccessGrantTable.orgMembershipId,
       orgWide: MarketplaceAccessGrantTable.orgWide,
       removedAt: MarketplaceAccessGrantTable.removedAt,
@@ -174,19 +229,23 @@ async function resolveMarketplaceRoleForIds(context: PluginArchActorContext, mar
       teamId: MarketplaceAccessGrantTable.teamId,
     })
     .from(MarketplaceAccessGrantTable)
-    .where(inArray(MarketplaceAccessGrantTable.marketplaceId, marketplaceIds))
+    .where(and(inArray(MarketplaceAccessGrantTable.marketplaceId, marketplaceIds), eq(MarketplaceAccessGrantTable.organizationId, actorOrganizationId(context))))
 
   return resolveGrantRole({ context, grants })
 }
 
-export async function resolvePluginArchResourceRole(input: ResourceLookupInput) {
+// Callers must have already confirmed the resource belongs to the actor's organization.
+async function resolveOrganizationResourceRole(input: ResourceLookupInput) {
   if (isPluginArchOrgAdmin(input.context)) {
     return "manager" satisfies PluginArchRole
   }
 
+  const organizationId = actorOrganizationId(input.context)
+
   if (input.resourceKind === "marketplace") {
     const grants = await db
       .select({
+        organizationId: MarketplaceAccessGrantTable.organizationId,
         orgMembershipId: MarketplaceAccessGrantTable.orgMembershipId,
         orgWide: MarketplaceAccessGrantTable.orgWide,
         removedAt: MarketplaceAccessGrantTable.removedAt,
@@ -194,13 +253,14 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
         teamId: MarketplaceAccessGrantTable.teamId,
       })
       .from(MarketplaceAccessGrantTable)
-      .where(eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId))
+      .where(and(eq(MarketplaceAccessGrantTable.marketplaceId, input.resourceId), eq(MarketplaceAccessGrantTable.organizationId, organizationId)))
     return resolveGrantRole({ context: input.context, grants })
   }
 
   if (input.resourceKind === "plugin") {
     const grants = await db
       .select({
+        organizationId: PluginAccessGrantTable.organizationId,
         orgMembershipId: PluginAccessGrantTable.orgMembershipId,
         orgWide: PluginAccessGrantTable.orgWide,
         removedAt: PluginAccessGrantTable.removedAt,
@@ -208,8 +268,8 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
         teamId: PluginAccessGrantTable.teamId,
       })
       .from(PluginAccessGrantTable)
-      .where(eq(PluginAccessGrantTable.pluginId, input.resourceId))
-    const resolved = await resolveGrantRole({ context: input.context, grants })
+      .where(and(eq(PluginAccessGrantTable.pluginId, input.resourceId), eq(PluginAccessGrantTable.organizationId, organizationId)))
+    const resolved = resolveGrantRole({ context: input.context, grants })
     if (resolved) {
       return resolved
     }
@@ -217,7 +277,13 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
     const memberships = await db
       .select({ marketplaceId: MarketplacePluginTable.marketplaceId })
       .from(MarketplacePluginTable)
-      .where(and(eq(MarketplacePluginTable.pluginId, input.resourceId), isNull(MarketplacePluginTable.removedAt)))
+      .innerJoin(MarketplaceTable, eq(MarketplacePluginTable.marketplaceId, MarketplaceTable.id))
+      .where(and(
+        eq(MarketplacePluginTable.pluginId, input.resourceId),
+        eq(MarketplacePluginTable.organizationId, organizationId),
+        eq(MarketplaceTable.organizationId, organizationId),
+        isNull(MarketplacePluginTable.removedAt),
+      ))
 
     const marketplaceRole = await resolveMarketplaceRoleForIds(input.context, memberships.map((membership) => membership.marketplaceId))
     return maxRole(resolved, marketplaceRole ? "viewer" : null)
@@ -226,6 +292,7 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
   if (input.resourceKind === "connector_instance") {
     const grants = await db
       .select({
+        organizationId: ConnectorInstanceAccessGrantTable.organizationId,
         orgMembershipId: ConnectorInstanceAccessGrantTable.orgMembershipId,
         orgWide: ConnectorInstanceAccessGrantTable.orgWide,
         removedAt: ConnectorInstanceAccessGrantTable.removedAt,
@@ -233,12 +300,13 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
         teamId: ConnectorInstanceAccessGrantTable.teamId,
       })
       .from(ConnectorInstanceAccessGrantTable)
-      .where(eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId))
+      .where(and(eq(ConnectorInstanceAccessGrantTable.connectorInstanceId, input.resourceId), eq(ConnectorInstanceAccessGrantTable.organizationId, organizationId)))
     return resolveGrantRole({ context: input.context, grants })
   }
 
   const directGrants = await db
     .select({
+      organizationId: ConfigObjectAccessGrantTable.organizationId,
       orgMembershipId: ConfigObjectAccessGrantTable.orgMembershipId,
       orgWide: ConfigObjectAccessGrantTable.orgWide,
       removedAt: ConfigObjectAccessGrantTable.removedAt,
@@ -246,9 +314,9 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
       teamId: ConfigObjectAccessGrantTable.teamId,
     })
     .from(ConfigObjectAccessGrantTable)
-    .where(eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId))
+    .where(and(eq(ConfigObjectAccessGrantTable.configObjectId, input.resourceId), eq(ConfigObjectAccessGrantTable.organizationId, organizationId)))
 
-  let resolved = await resolveGrantRole({ context: input.context, grants: directGrants })
+  let resolved = resolveGrantRole({ context: input.context, grants: directGrants })
   if (resolved) {
     return resolved
   }
@@ -256,11 +324,28 @@ export async function resolvePluginArchResourceRole(input: ResourceLookupInput) 
   const memberships = await db
     .select({ pluginId: PluginConfigObjectTable.pluginId })
     .from(PluginConfigObjectTable)
-    .where(and(eq(PluginConfigObjectTable.configObjectId, input.resourceId), isNull(PluginConfigObjectTable.removedAt)))
+    .innerJoin(PluginTable, eq(PluginConfigObjectTable.pluginId, PluginTable.id))
+    .where(and(
+      eq(PluginConfigObjectTable.configObjectId, input.resourceId),
+      eq(PluginConfigObjectTable.organizationId, organizationId),
+      eq(PluginTable.organizationId, organizationId),
+      isNull(PluginConfigObjectTable.removedAt),
+    ))
 
   const pluginRole = await resolvePluginRoleForIds(input.context, memberships.map((membership) => membership.pluginId))
   resolved = maxRole(resolved, pluginRole ? "viewer" : null)
   return resolved
+}
+
+/**
+ * Resolves the actor's role on a resource. Resources owned by another
+ * organization resolve to null, even for owners/admins of the actor's org.
+ */
+export async function resolvePluginArchResourceRole(input: ResourceLookupInput) {
+  if (!(await isResourceInActorOrganization(input))) {
+    return null
+  }
+  return resolveOrganizationResourceRole(input)
 }
 
 export async function requirePluginArchCapability(context: PluginArchActorContext, capability: PluginArchCapability) {
@@ -277,7 +362,12 @@ export async function requirePluginArchResourceRole(input: {
   resourceKind: PluginArchResourceKind
   role: PluginArchRole
 }) {
-  const resolved = await resolvePluginArchResourceRole(input as RequireResourceRoleInput)
+  const lookup = input as RequireResourceRoleInput
+  if (!(await isResourceInActorOrganization(lookup))) {
+    throw new PluginArchAuthorizationError(404, `${input.resourceKind}_not_found`, `${resourceLabels[input.resourceKind]} not found.`)
+  }
+
+  const resolved = await resolveOrganizationResourceRole(lookup)
   if (roleSatisfies(resolved, input.role)) {
     return resolved
   }

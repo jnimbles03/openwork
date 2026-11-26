@@ -202,7 +202,7 @@ function actorContext(c: OrgContext): PluginArchActorContext {
 function routeErrorResponse(c: OrgContext, error: unknown) {
   if (error instanceof PluginArchAuthorizationError) {
     const authorizationError = error as PluginArchAuthorizationError
-    return c.json({ error: authorizationError.error, message: authorizationError.message }, 403)
+    return c.json({ error: authorizationError.error, message: authorizationError.message }, authorizationError.status)
   }
   if (error instanceof PluginArchRouteFailure) {
     const failure = error as PluginArchRouteFailure
