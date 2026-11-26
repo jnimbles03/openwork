@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  app-builder-lib>minimatch: ^10.2.6
+  glob@9>minimatch: ^8.0.6
+
 patchedDependencies:
   '@solidjs/router@0.15.4':
     hash: 1db11a7c28fe4da76187d42efaffc6b9a70ad370462fffb794ff90e67744d770
