@@ -23,6 +23,13 @@ pnpm --filter @openwork-ee/den-api dev:local
 - admin routes under `/v1/admin*`
 - worker lifecycle and billing routes under `/v1/workers*`
 
+## Client IP and rate limits
+
+Better Auth rate limits are keyed on a client IP that den-api resolves itself (`src/client-ip.ts`); caller-supplied `X-Forwarded-For` prefixes, `X-Real-IP`, and `CF-Connecting-IP` are never trusted.
+
+- `DEN_TRUSTED_PROXY_HOPS` (default `1`): number of reverse proxies in front of den-api that append to `X-Forwarded-For`. The client IP is the entry that many hops from the right. Set `0` when den-api is exposed directly, so the socket address is used.
+- `DEN_WEB_PROXY_SECRET` (optional, 32+ chars): shared with den-web. Requests carrying it may report the browser's client IP; all others are keyed on the trusted hop.
+
 ## Folder map
 
 - `src/routes/auth/`: Better Auth mount + desktop handoff endpoints

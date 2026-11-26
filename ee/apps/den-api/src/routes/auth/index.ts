@@ -1,9 +1,11 @@
 import { eq } from "@openwork-ee/den-db/drizzle"
 import { OAuthClientTable } from "@openwork-ee/den-db/schema"
-import type { Hono } from "hono"
+import { getConnInfo } from "@hono/node-server/conninfo"
+import type { Context, Hono } from "hono"
 import { oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata } from "@better-auth/oauth-provider"
 import { describeRoute } from "hono-openapi"
 import { auth } from "../../auth.js"
+import { withTrustedClientIp } from "../../client-ip.js"
 import { db } from "../../db.js"
 import { env } from "../../env.js"
 import { emptyResponse } from "../../openapi.js"
@@ -114,6 +116,18 @@ async function ensureMcpClientScopes(request: Request) {
     .where(eq(OAuthClientTable.clientId, clientId))
 }
 
+function readRemoteAddress(c: Context) {
+  try {
+    return getConnInfo(c).remote.address ?? null
+  } catch {
+    return null
+  }
+}
+
+function handleAuthRequest(c: Context, request: Request = c.req.raw) {
+  return auth.handler(withTrustedClientIp(request, readRemoteAddress(c)))
+}
+
 export function registerAuthRoutes<T extends { Variables: AuthContextVariables }>(app: Hono<T>) {
   app.get("/api/auth/.well-known/oauth-authorization-server", async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
   app.get("/api/auth/.well-known/openid-configuration", async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
@@ -121,11 +135,11 @@ export function registerAuthRoutes<T extends { Variables: AuthContextVariables }
   app.get("/.well-known/openid-configuration/api/auth", async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(c.req.raw), requestOrigin(c.req.raw)))
   app.get("/.well-known/oauth-authorization-server", async (c) => rewriteMetadataOrigin(await oauthProviderAuthServerMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/oauth-authorization-server")), requestOrigin(c.req.raw)))
   app.get("/.well-known/openid-configuration", async (c) => rewriteMetadataOrigin(await oauthProviderOpenIdConfigMetadata(auth)(rewriteAuthRequest(c.req.raw, "/api/auth/.well-known/openid-configuration")), requestOrigin(c.req.raw)))
-  app.post("/register", async (c) => auth.handler(await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
-  app.post("/api/auth/oauth2/register", async (c) => auth.handler(await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
+  app.post("/register", async (c) => handleAuthRequest(c, await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
+  app.post("/api/auth/oauth2/register", async (c) => handleAuthRequest(c, await rewriteMcpClientRegistrationRequest(c.req.raw, "/api/auth/oauth2/register")))
   app.get("/api/auth/oauth2/authorize", async (c) => {
     await ensureMcpClientScopes(c.req.raw)
-    return auth.handler(c.req.raw)
+    return handleAuthRequest(c)
   })
 
   app.on(
@@ -143,7 +157,7 @@ export function registerAuthRoutes<T extends { Variables: AuthContextVariables }
         401: emptyResponse("Better Auth rejected the request because authentication failed."),
       },
     }),
-    (c) => auth.handler(c.req.raw),
+    (c) => handleAuthRequest(c),
   )
   registerDesktopAuthRoutes(app)
 }
