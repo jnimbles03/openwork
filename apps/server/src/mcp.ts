@@ -1,7 +1,7 @@
-import { minimatch } from "minimatch";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { compileGlob, type GlobBudget } from "./glob-match.js";
 import type { McpItem } from "./types.js";
 import { readJsoncFile, updateJsoncPath, updateJsoncTopLevel } from "./jsonc.js";
 import { opencodeConfigPath } from "./workspace-files.js";
@@ -30,11 +30,20 @@ function getDeniedToolPatterns(config: Record<string, unknown>): string[] {
   return deny.filter((item) => typeof item === "string") as string[];
 }
 
-function isMcpDisabledByTools(config: Record<string, unknown>, name: string): boolean {
-  const patterns = getDeniedToolPatterns(config);
-  if (patterns.length === 0) return false;
-  const candidates = [`mcp.${name}`, `mcp.${name}.*`, `mcp:${name}`, `mcp:${name}:*`, "mcp.*", "mcp:*"];
-  return patterns.some((pattern) => candidates.some((candidate) => minimatch(candidate, pattern)));
+// Bounds the total deny-pattern matching work per listing. `disabledByTools` is
+// informational, so entries past the budget are reported as not disabled.
+const DENY_MATCH_BUDGET = 2_000_000;
+
+function mcpDisabledByTools(
+  config: Record<string, unknown>,
+  budget: GlobBudget,
+): (name: string) => boolean {
+  const matchers = getDeniedToolPatterns(config).map((pattern) => compileGlob(pattern, budget));
+  if (matchers.length === 0) return () => false;
+  return (name) => {
+    const candidates = [`mcp.${name}`, `mcp.${name}.*`, `mcp:${name}`, `mcp:${name}:*`, "mcp.*", "mcp:*"];
+    return matchers.some((matches) => candidates.some((candidate) => matches(candidate)));
+  };
 }
 
 export async function listMcp(workspaceRoot: string): Promise<McpItem[]> {
@@ -43,6 +52,10 @@ export async function listMcp(workspaceRoot: string): Promise<McpItem[]> {
 
   const projectMcpMap = getMcpConfig(config);
   const globalMcpMap = getMcpConfig(globalConfig);
+
+  const budget: GlobBudget = { remaining: DENY_MATCH_BUDGET };
+  const isDisabledByProject = mcpDisabledByTools(config, budget);
+  const isDisabledByGlobal = mcpDisabledByTools(globalConfig, budget);
 
   const items: McpItem[] = [];
 
@@ -53,8 +66,7 @@ export async function listMcp(workspaceRoot: string): Promise<McpItem[]> {
       name,
       config: entry,
       source: "config.global",
-      disabledByTools:
-        (isMcpDisabledByTools(globalConfig, name) || isMcpDisabledByTools(config, name)) || undefined,
+      disabledByTools: (isDisabledByGlobal(name) || isDisabledByProject(name)) || undefined,
     });
   }
 
@@ -64,7 +76,7 @@ export async function listMcp(workspaceRoot: string): Promise<McpItem[]> {
       name,
       config: entry,
       source: "config.project",
-      disabledByTools: isMcpDisabledByTools(config, name) || undefined,
+      disabledByTools: isDisabledByProject(name) || undefined,
     });
   }
 
