@@ -4,10 +4,13 @@ const DEFAULT_API_BASE = "https://api.openworklabs.com";
 const DEFAULT_AUTH_ORIGIN = "https://app.openworklabs.com";
 const DEFAULT_AUTH_FALLBACK_BASE = "https://den-control-plane-openwork.onrender.com";
 const NO_BODY_STATUS = new Set([204, 205, 304]);
+const CLIENT_IP_HEADER = "x-openwork-client-ip";
+const PROXY_SECRET_HEADER = "x-openwork-proxy-secret";
 
 const apiBase = normalizeBaseUrl(process.env.DEN_API_BASE ?? DEFAULT_API_BASE);
 const authOrigin = normalizeBaseUrl(process.env.DEN_AUTH_ORIGIN ?? DEFAULT_AUTH_ORIGIN);
 const authFallbackBase = normalizeBaseUrl(process.env.DEN_AUTH_FALLBACK_BASE ?? DEFAULT_AUTH_FALLBACK_BASE);
+const denWebProxySecret = process.env.DEN_WEB_PROXY_SECRET?.trim() || null;
 
 type ProxyOptions = {
   routePrefix: string;
@@ -143,6 +146,16 @@ function copySetCookieHeaders(upstreamHeaders: Headers, responseHeaders: Headers
   }
 }
 
+// Only the right-most X-Forwarded-For entry is written by the hosting platform;
+// everything to its left is whatever the caller sent.
+function readClientIp(request: NextRequest): string | null {
+  const entries = (request.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return entries.at(-1) ?? null;
+}
+
 function buildHeaders(request: NextRequest, contentType: string | null): Headers {
   const headers = new Headers();
   const copyHeaders = [
@@ -153,7 +166,6 @@ function buildHeaders(request: NextRequest, contentType: string | null): Headers
     "x-requested-with",
     "x-api-key",
     "origin",
-    "x-forwarded-for",
   ];
 
   for (const key of copyHeaders) {
@@ -161,6 +173,12 @@ function buildHeaders(request: NextRequest, contentType: string | null): Headers
     if (value) {
       headers.set(key, value);
     }
+  }
+
+  const clientIp = readClientIp(request);
+  if (denWebProxySecret && clientIp) {
+    headers.set(CLIENT_IP_HEADER, clientIp);
+    headers.set(PROXY_SECRET_HEADER, denWebProxySecret);
   }
 
   if (contentType) {
