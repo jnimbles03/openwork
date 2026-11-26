@@ -28,11 +28,12 @@ Use `LLM Providers` when you want the org to manage the credential, model list, 
 3. Under `Cloud providers`, click `Import`.
 4. Reload the workspace when OpenWork asks.
 
-OpenWork writes the imported provider into the workspace `opencode.jsonc` and stores the org credential for that workspace.
+OpenWork writes the imported provider into the workspace `opencode.jsonc` and stores the org credential for that workspace. Providers shared with you later appear under `Cloud providers` and are not added to the workspace until you click `Import`.
 
 ## Update or remove it later
 
 - Use `Sync` after changing models or access in OpenWork Cloud.
+- Background sync keeps imported providers up to date, but a change to the provider package, API address, request options, or model headers is only applied when you click `Sync`.
 - Use `Remove` to stop managing the imported provider from this workspace.
 - If the provider was deleted in Cloud, the desktop app shows `Removed from cloud` and lets you `Uninstall` the local config.
 - The provider must have a stored org credential before the desktop app can import it.
