@@ -85,10 +85,14 @@ function stripProxyHeaders(input: Headers) {
   return headers
 }
 
+// Only the right-most X-Forwarded-For entry is appended by our edge proxy;
+// everything to its left is whatever the caller sent.
 function readClientIp(request: Request) {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-  const realIp = request.headers.get("x-real-ip")?.trim()
-  return forwarded || realIp || "unknown"
+  const entries = (request.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  return entries.at(-1) ?? "unknown"
 }
 
 function readBearerToken(request: Request) {

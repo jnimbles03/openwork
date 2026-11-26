@@ -29,10 +29,14 @@ function currentTime() {
   return Date.now();
 }
 
+// Only the right-most X-Forwarded-For entry is written by the hosting platform;
+// everything to its left is whatever the caller sent.
 function readClientIp(request: Request) {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  return forwarded || realIp || "unknown";
+  const entries = (request.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return entries.at(-1) ?? "unknown";
 }
 
 function getRequestOrigin(request: Request) {
