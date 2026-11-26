@@ -237,7 +237,7 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
   });
 
   const buildCloudProviderConfig = (
-    provider: DenOrgLlmProviderConnection,
+    provider: DenOrgLlmProvider,
   ): ProviderConfig => {
     const models = Object.fromEntries(
       provider.models.map((model) => {
@@ -305,6 +305,55 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     }
 
     return next;
+  };
+
+  const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+  const stableStringify = (value: unknown): string => {
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => stableStringify(entry ?? null)).join(",")}]`;
+    }
+    if (isPlainRecord(value)) {
+      const entries = Object.keys(value)
+        .filter((key) => value[key] !== undefined)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+      return `{${entries.join(",")}}`;
+    }
+    return JSON.stringify(value ?? null);
+  };
+
+  const getCloudProviderContentKey = (provider: DenOrgLlmProvider) =>
+    stableStringify({
+      id: provider.id,
+      source: provider.source,
+      config: buildCloudProviderConfig(provider),
+    });
+
+  // Fields that decide which code OpenCode loads and where requests are sent.
+  // A change to any of these must be approved by the user, never applied by sync.
+  const cloudProviderRuntimeModelKeys = ["options", "headers", "provider", "variants"] as const;
+
+  const getCloudProviderRuntimeKey = (config: unknown) => {
+    if (!isPlainRecord(config)) return null;
+    const models = isPlainRecord(config.models) ? config.models : {};
+    const runtimeModels: Record<string, unknown> = {};
+    for (const [modelId, model] of Object.entries(models)) {
+      if (!isPlainRecord(model)) continue;
+      const picked: Record<string, unknown> = {};
+      for (const key of cloudProviderRuntimeModelKeys) {
+        if (model[key] !== undefined) picked[key] = model[key];
+      }
+      if (Object.keys(picked).length > 0) runtimeModels[modelId] = picked;
+    }
+    return stableStringify({
+      npm: config.npm,
+      api: config.api,
+      options: config.options,
+      env: config.env,
+      models: runtimeModels,
+    });
   };
 
   const readWorkspaceOpenworkConfigRecord = async (): Promise<
@@ -1125,9 +1174,10 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
   }
 
   async function connectCloudProviderInternal(
-    cloudProviderId: string,
+    approved: DenOrgLlmProvider,
     optionsArg?: { silent?: boolean },
   ) {
+    const cloudProviderId = approved.id;
     if (!optionsArg?.silent) {
       setStateField("providerAuthError", null);
     }
@@ -1150,6 +1200,11 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
         token,
       });
       const provider = await den.getOrgLlmProviderConnection(orgId, cloudProviderId);
+      if (getCloudProviderContentKey(provider) !== getCloudProviderContentKey(approved)) {
+        throw new Error(
+          `${approved.name} changed in OpenWork Cloud after it was listed. Refresh and review it before connecting.`,
+        );
+      }
       const existingImported = state.importedCloudProviders[cloudProviderId] ?? null;
       const localProviderId = getCloudManagedProviderId(provider);
       const apiKey = provider.apiKey?.trim() ?? "";
@@ -1219,7 +1274,13 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
   }
 
   async function connectCloudProvider(cloudProviderId: string) {
-    return await connectCloudProviderInternal(cloudProviderId);
+    const listed = state.cloudOrgProviders.find((provider) => provider.id === cloudProviderId);
+    if (!listed) {
+      const message = "This organization provider is no longer listed. Refresh Cloud settings and try again.";
+      setStateField("providerAuthError", message);
+      throw new Error(message);
+    }
+    return await connectCloudProviderInternal(listed);
   }
 
   async function removeCloudProviderInternal(
@@ -1316,6 +1377,17 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     (importedProvider.updatedAt ?? null) !== (provider.updatedAt ?? null) ||
     !sameStringList(importedProvider.modelIds, sortStrings(provider.models.map((model) => model.id)));
 
+  const readImportedProviderRuntimeKey = async (localProviderId: string) => {
+    const configFile = await readProjectConfigFile();
+    if (!configFile?.content?.trim()) return null;
+    const parsed = parse(configFile.content) as unknown;
+    if (!isPlainRecord(parsed) || !isPlainRecord(parsed.provider)) return null;
+    return getCloudProviderRuntimeKey(parsed.provider[localProviderId]);
+  };
+
+  // Sync only refreshes providers the user already imported, and only when the
+  // refresh keeps the package, endpoints, and request options they approved.
+  // New providers and runtime changes wait for an explicit connect.
   async function performCloudProviderSync(reason: CloudProviderSyncReason) {
     if (!hasCloudProviderSyncPrerequisites()) {
       return;
@@ -1325,7 +1397,6 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     const liveProviders = await refreshCloudOrgProviders({ force: true });
     const liveProviderMap = new Map(liveProviders.map((provider) => [provider.id, provider]));
     const failures: string[] = [];
-    const processedLiveProviderIds = new Set<string>();
     let configChanged = false;
 
     for (const importedProvider of Object.values(importedProviders)) {
@@ -1340,33 +1411,19 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
         continue;
       }
 
-      processedLiveProviderIds.add(liveProvider.id);
-
       if (!isCloudProviderOutOfSync(liveProvider, importedProvider)) {
         continue;
       }
 
       try {
+        const currentRuntimeKey = await readImportedProviderRuntimeKey(importedProvider.providerId);
+        const liveRuntimeKey = getCloudProviderRuntimeKey(buildCloudProviderConfig(liveProvider));
+        if (currentRuntimeKey === null || currentRuntimeKey !== liveRuntimeKey) {
+          continue;
+        }
         await removeCloudProviderInternal(importedProvider.cloudProviderId, { silent: true });
-        await connectCloudProviderInternal(liveProvider.id, { silent: true });
         configChanged = true;
-      } catch (error) {
-        failures.push(logCloudProviderSyncError(reason, error));
-      }
-    }
-
-    const nextImportedProviders = state.importedCloudProviders;
-    for (const liveProvider of liveProviders) {
-      if (processedLiveProviderIds.has(liveProvider.id)) {
-        continue;
-      }
-      if (nextImportedProviders[liveProvider.id]) {
-        continue;
-      }
-
-      try {
-        await connectCloudProviderInternal(liveProvider.id, { silent: true });
-        configChanged = true;
+        await connectCloudProviderInternal(liveProvider, { silent: true });
       } catch (error) {
         failures.push(logCloudProviderSyncError(reason, error));
       }
