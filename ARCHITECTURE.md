@@ -141,6 +141,15 @@ through the OpenWork server and `x-opencode-directory`, but startup no longer
 depends on opening a project `opencode.json` from slow cloud-synced folders such
 as iCloud Drive.
 
+The OpenWork server owns that directory choice on its OpenCode proxy
+(`/opencode/*` and `/w/:id/opencode/*`). It drops any caller-supplied
+`x-opencode-directory` header, `directory` query, and OpenCode `workspace`
+selector, then forwards the directory it holds for the workspace. Mounted
+requests always use the mounted workspace's directory. Unmounted requests may
+name another configured workspace that is inside the authorized roots and
+served by the same OpenCode connection; any other value falls back to the
+default workspace.
+
 ## opencode primitives
 how to pick the right extension abstraction for 
 @opencode
