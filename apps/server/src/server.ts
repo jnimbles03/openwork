@@ -294,7 +294,9 @@ export function startServer(config: ServerConfig) {
           const actor = await requireClient(request, config, tokens);
           assertOpencodeProxyAllowed(actor, request.method, url.pathname);
           proxyService = "opencode";
-          const response = await proxyOpencodeRequest({ config, request, url, workspace: config.workspaces[0] });
+          const workspace = config.workspaces[0];
+          const directoryChoices = workspace ? await listSharedOpencodeDirectories(config, workspace) : [];
+          const response = await proxyOpencodeRequest({ config, request, url, workspace, directoryChoices });
           return finalize(response);
         } catch (error) {
           const apiError = error instanceof ApiError
@@ -461,6 +463,7 @@ async function proxyOpencodeRequest(input: {
   url: URL;
   workspace?: WorkspaceInfo;
   proxyPath?: string;
+  directoryChoices?: string[];
 }) {
   const workspace = input.workspace;
   const baseUrl = workspace ? resolveWorkspaceOpencodeConnection(input.config, workspace).baseUrl?.trim() ?? "" : "";
@@ -468,18 +471,35 @@ async function proxyOpencodeRequest(input: {
     throw new ApiError(400, "opencode_unconfigured", "OpenCode base URL is missing for this workspace");
   }
 
+  // OpenCode picks its working directory from the `directory` query, the
+  // x-opencode-directory header, or an OpenCode control-plane `workspace`, so
+  // none of them may carry a caller-chosen value. Only directories the server
+  // already holds for a shared workspace are forwarded.
+  const directory = selectOpencodeProxyDirectory({
+    request: input.request,
+    url: input.url,
+    fallback: workspace ? resolveOpencodeDirectory(workspace) : null,
+    choices: input.directoryChoices ?? [],
+  });
+
   const proxyPath = input.proxyPath ?? input.url.pathname;
-  const targetUrl = buildOpencodeProxyUrl(baseUrl, proxyPath, input.url.search);
+  const targetUrl = new URL(buildOpencodeProxyUrl(baseUrl, proxyPath, input.url.search));
+  targetUrl.searchParams.delete("directory");
+  targetUrl.searchParams.delete("workspace");
+  if (directory) {
+    targetUrl.searchParams.set("directory", directory);
+  }
+
   const headers = new Headers(input.request.headers);
   headers.delete("authorization");
   headers.delete("x-openwork-host-token");
   headers.delete("x-openwork-client-id");
   headers.delete("host");
   headers.delete("origin");
-
-  const directory = workspace ? resolveOpencodeDirectory(workspace) : null;
-  if (directory && !headers.has("x-opencode-directory")) {
-    headers.set("x-opencode-directory", directory);
+  headers.delete("x-opencode-directory");
+  headers.delete("x-opencode-workspace");
+  if (directory) {
+    headers.set("x-opencode-directory", encodeOpencodeDirectoryHeader(directory));
   }
 
   const auth = workspace ? resolveWorkspaceOpencodeConnection(input.config, workspace).authHeader ?? null : null;
@@ -496,6 +516,57 @@ async function proxyOpencodeRequest(input: {
   });
 
   return sanitizeProxyResponse(response);
+}
+
+function encodeOpencodeDirectoryHeader(directory: string): string {
+  return /[^\x00-\x7F]/.test(directory) ? encodeURIComponent(directory) : directory;
+}
+
+function decodeOpencodeDirectoryHeader(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Returns a server-held directory: one of `choices` when the caller names it
+ * unambiguously, otherwise `fallback`. Caller-supplied strings are only used
+ * for the lookup and are never forwarded.
+ */
+function selectOpencodeProxyDirectory(input: {
+  request: Request;
+  url: URL;
+  fallback: string | null;
+  choices: string[];
+}): string | null {
+  const requested = input.url.searchParams.getAll("directory");
+  const header = input.request.headers.get("x-opencode-directory");
+  if (header !== null) requested.push(decodeOpencodeDirectoryHeader(header));
+  const wanted = new Set(requested.map((value) => value.trim()).filter(Boolean).map((value) => resolve(value)));
+  if (wanted.size !== 1) return input.fallback;
+  const [target] = wanted;
+  return input.choices.find((choice) => resolve(choice) === target) ?? input.fallback;
+}
+
+/**
+ * Directories the unmounted /opencode proxy may switch to: authorized
+ * workspaces served by the same OpenCode connection as `target`.
+ */
+async function listSharedOpencodeDirectories(config: ServerConfig, target: WorkspaceInfo): Promise<string[]> {
+  const targetConnection = resolveWorkspaceOpencodeConnection(config, target);
+  const directories: string[] = [];
+  for (const workspace of config.workspaces) {
+    const directory = resolveOpencodeDirectory(workspace);
+    if (!directory) continue;
+    const connection = resolveWorkspaceOpencodeConnection(config, workspace);
+    if (connection.baseUrl !== targetConnection.baseUrl) continue;
+    if (connection.authHeader !== targetConnection.authHeader) continue;
+    if (!(await isAuthorizedRoot(workspace.path, config.authorizedRoots))) continue;
+    directories.push(directory);
+  }
+  return directories;
 }
 
 /**
