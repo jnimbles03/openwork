@@ -245,17 +245,33 @@ export function deriveOnboardingWorkerName(user: AuthUser): string {
   return normalizeWorkerName(`${owner}${suffix}`);
 }
 
+// Must match the schemes den-api accepts for desktop handoff, which are the
+// ones the OpenWork desktop builds register.
+const DESKTOP_AUTH_SCHEMES = ["openwork", "openwork-dev"] as const;
+export type DesktopAuthScheme = (typeof DESKTOP_AUTH_SCHEMES)[number];
+
+export function normalizeDesktopAuthScheme(value: string | null | undefined): DesktopAuthScheme | null {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return (DESKTOP_AUTH_SCHEMES as readonly string[]).includes(normalized)
+    ? (normalized as DesktopAuthScheme)
+    : null;
+}
+
 export function getSocialCallbackUrl(): string {
   try {
     const origin = typeof window !== "undefined" ? window.location.origin : OPENWORK_AUTH_CALLBACK_BASE_URL || "https://app.openworklabs.com";
     const callbackUrl = new URL("/", origin);
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      for (const key of ["mode", "desktopAuth", "desktopScheme", "invite"]) {
+      for (const key of ["mode", "desktopAuth", "invite"]) {
         const value = params.get(key)?.trim() ?? "";
         if (value) {
           callbackUrl.searchParams.set(key, value);
         }
+      }
+      const desktopScheme = normalizeDesktopAuthScheme(params.get("desktopScheme"));
+      if (desktopScheme) {
+        callbackUrl.searchParams.set("desktopScheme", desktopScheme);
       }
     }
     return callbackUrl.toString();

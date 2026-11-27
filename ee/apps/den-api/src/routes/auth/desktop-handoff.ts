@@ -10,9 +10,21 @@ import { db } from "../../db.js"
 import { denTypeIdSchema, invalidRequestSchema, jsonResponse, notFoundSchema, unauthorizedSchema } from "../../openapi.js"
 import type { AuthContextVariables } from "../../session.js"
 
+// Only the URL schemes the OpenWork desktop builds register (tauri.conf.json,
+// tauri.dev.conf.json, electron/main.mjs). Any other scheme could route the
+// grant to a handler the user's browser or OS resolves to someone else.
+const DESKTOP_HANDOFF_SCHEMES = ["openwork", "openwork-dev"] as const
+type DesktopHandoffScheme = (typeof DESKTOP_HANDOFF_SCHEMES)[number]
+
+const desktopSchemeSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(z.enum(DESKTOP_HANDOFF_SCHEMES))
+
 const createGrantSchema = z.object({
   next: z.string().trim().max(128).optional(),
-  desktopScheme: z.string().trim().max(32).optional(),
+  desktopScheme: desktopSchemeSchema.optional(),
 })
 
 const exchangeGrantSchema = z.object({
@@ -126,15 +138,11 @@ function resolveDesktopDenBaseUrl(request: Request) {
 }
 
 function buildOpenworkDeepLink(input: {
-  scheme?: string | null
+  scheme: DesktopHandoffScheme
   grant: string
   denBaseUrl: string
 }) {
-  const requestedScheme = input.scheme?.trim() || "openwork"
-  const scheme = /^[a-z][a-z0-9+.-]*$/i.test(requestedScheme)
-    ? requestedScheme
-    : "openwork"
-  const url = new URL(`${scheme}://den-auth`)
+  const url = new URL(`${input.scheme}://den-auth`)
   url.searchParams.set("grant", input.grant)
   url.searchParams.set("denBaseUrl", input.denBaseUrl)
   return url.toString()
@@ -181,7 +189,7 @@ export function registerDesktopAuthRoutes<T extends { Variables: AuthContextVari
       grant,
       expiresAt: expiresAt.toISOString(),
       openworkUrl: buildOpenworkDeepLink({
-        scheme: input.desktopScheme || "openwork",
+        scheme: input.desktopScheme ?? "openwork",
         grant,
         denBaseUrl,
       }),

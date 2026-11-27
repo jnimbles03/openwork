@@ -110,9 +110,11 @@ export function AuthPanel({
     authBusy,
     authInfo,
     authError,
+    user,
     desktopAuthRequested,
     desktopRedirectUrl,
     desktopRedirectBusy,
+    completeDesktopAuthHandoff,
     showAuthFeedback,
     submitAuth,
     submitVerificationCode,
@@ -190,6 +192,21 @@ export function AuthPanel({
       {desktopAuthRequested ? (
         <div className="den-notice is-info grid gap-3 text-[13px]">
           <p className="m-0">Finish sign-in here, then jump back into the OpenWork desktop app.</p>
+          {user && !desktopRedirectUrl ? (
+            <div className="grid gap-3">
+              <p className="m-0">
+                Signed in as <span className="font-medium">{user.email}</span>. Only continue if you started this sign-in from the OpenWork desktop app.
+              </p>
+              <button
+                type="button"
+                className="den-button-primary w-full sm:w-auto"
+                onClick={() => void completeDesktopAuthHandoff()}
+                disabled={desktopRedirectBusy}
+              >
+                {desktopRedirectBusy ? "Opening OpenWork..." : "Continue in OpenWork desktop app"}
+              </button>
+            </div>
+          ) : null}
           {desktopRedirectUrl ? (
             <div className="grid gap-3">
               <div className="flex flex-wrap gap-3">

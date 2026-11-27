@@ -14,6 +14,7 @@ import {
   type AuthMode,
   type AuthUser,
   type BillingSummary,
+  type DesktopAuthScheme,
   type LaunchEvent,
   type OnboardingIntent,
   type OrgLimitError,
@@ -49,6 +50,7 @@ import {
   isWorkerLaunch,
   listItemToWorker,
   normalizeAuthModeParam,
+  normalizeDesktopAuthScheme,
   parseWorkspaceIdFromUrl,
   requestJson,
   resetPosthogUser,
@@ -81,9 +83,10 @@ type DenFlowContextValue = {
   user: AuthUser | null;
   sessionHydrated: boolean;
   desktopAuthRequested: boolean;
-  desktopAuthScheme: string;
+  desktopAuthScheme: DesktopAuthScheme;
   desktopRedirectUrl: string | null;
   desktopRedirectBusy: boolean;
+  completeDesktopAuthHandoff: () => Promise<void>;
   showAuthFeedback: boolean;
   submitAuth: (event: FormEvent<HTMLFormElement>) => Promise<AuthNavigationResult>;
   submitVerificationCode: (event: FormEvent<HTMLFormElement>) => Promise<AuthNavigationResult>;
@@ -187,10 +190,9 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   });
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [desktopAuthRequested, setDesktopAuthRequested] = useState(false);
-  const [desktopAuthScheme, setDesktopAuthScheme] = useState("openwork");
+  const [desktopAuthScheme, setDesktopAuthScheme] = useState<DesktopAuthScheme>("openwork");
   const [desktopRedirectBusy, setDesktopRedirectBusy] = useState(false);
   const [desktopRedirectUrl, setDesktopRedirectUrl] = useState<string | null>(null);
-  const [desktopRedirectAttempted, setDesktopRedirectAttempted] = useState(false);
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [billingBusy, setBillingBusy] = useState(false);
@@ -421,7 +423,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     }
 
     if (desktopAuthRequested) {
-      setAuthInfo("Signed in. Returning to OpenWork...");
+      setAuthInfo("Signed in. Confirm below to continue in the OpenWork desktop app.");
       return null;
     }
 
@@ -985,13 +987,14 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     return activeOrgSlug ? getOrgDashboardRoute(activeOrgSlug) : null;
   }
 
+  // Only call from an explicit user confirmation: the query string that
+  // requests desktop auth can come from any link.
   async function completeDesktopAuthHandoff() {
-    if (!desktopAuthRequested || desktopRedirectBusy) {
+    if (!desktopAuthRequested || !user || desktopRedirectBusy) {
       return;
     }
 
     setDesktopRedirectBusy(true);
-    setDesktopRedirectAttempted(true);
     setAuthError(null);
 
     try {
@@ -1234,7 +1237,6 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     setRuntimeUpgradeBusy(false);
     setPendingRestoredWorkerId(null);
     setDesktopRedirectUrl(null);
-    setDesktopRedirectAttempted(false);
     setAuthMode("sign-up");
     setEmail("");
     setPassword("");
@@ -1748,8 +1750,8 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     }
 
     setDesktopAuthRequested(params.get("desktopAuth") === "1");
-    const requestedScheme = params.get("desktopScheme")?.trim() ?? "";
-    if (/^[a-z][a-z0-9+.-]*$/i.test(requestedScheme)) {
+    const requestedScheme = normalizeDesktopAuthScheme(params.get("desktopScheme"));
+    if (requestedScheme) {
       setDesktopAuthScheme(requestedScheme);
     }
 
@@ -1971,14 +1973,6 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
   }, [activeWorker?.workerId, selectedWorker?.workerId, runtimeSnapshot?.upgrade.status]);
 
   useEffect(() => {
-    if (!desktopAuthRequested || !user || desktopRedirectUrl || desktopRedirectBusy || desktopRedirectAttempted) {
-      return;
-    }
-
-    void completeDesktopAuthHandoff();
-  }, [desktopAuthRequested, user?.id, authToken, desktopRedirectUrl, desktopRedirectBusy, desktopRedirectAttempted, desktopAuthScheme]);
-
-  useEffect(() => {
     if (!user || !onboardingPending) {
       onboardingAutoLaunchKeyRef.current = null;
       return;
@@ -2041,6 +2035,7 @@ export function DenFlowProvider({ children }: { children: ReactNode }) {
     desktopAuthScheme,
     desktopRedirectUrl,
     desktopRedirectBusy,
+    completeDesktopAuthHandoff,
     showAuthFeedback,
     submitAuth,
     submitVerificationCode,
