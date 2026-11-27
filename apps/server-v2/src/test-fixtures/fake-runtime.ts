@@ -31,8 +31,18 @@ async function startFakeOpencode(argv: string[]) {
   }
 
   const { host, port } = parsePort(argv);
+  const password = readOption("OPENCODE_SERVER_PASSWORD");
+  const expectedAuthorization = password
+    ? `Basic ${Buffer.from(`${readOption("OPENCODE_SERVER_USERNAME", "opencode")}:${password}`).toString("base64")}`
+    : null;
   const server = http.createServer((req, res) => {
     const pathname = req.url ? new URL(req.url, "http://localhost").pathname : "";
+    // Mirrors OpenCode's AuthMiddleware: Basic auth is enforced whenever a server password is set.
+    if (expectedAuthorization && req.method !== "OPTIONS" && req.headers.authorization !== expectedAuthorization) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
     if (pathname === "/health" || pathname === "/global/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ healthy: true, version }));

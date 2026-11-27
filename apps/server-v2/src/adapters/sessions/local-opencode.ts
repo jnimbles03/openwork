@@ -19,5 +19,6 @@ export function createLocalOpencodeSessionAdapter(input: {
   return createOpenCodeSessionBackend({
     baseUrl: runtimeHealth.baseUrl,
     directory: input.workspace.dataDir,
+    headers: input.runtime.getOpencodeRequestHeaders(),
   });
 }
