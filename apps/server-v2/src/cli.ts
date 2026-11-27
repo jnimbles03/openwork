@@ -10,6 +10,13 @@ function printHelp() {
     "  --port <port>   Port to bind. Defaults to 3100.",
     "  --help          Show this help text.",
     "",
+    "Authentication:",
+    "  Every route except /, /system/health, and /openapi.json needs a token.",
+    "  Set OPENWORK_SERVER_V2_HOST_TOKEN and/or OPENWORK_SERVER_V2_CLIENT_TOKEN, or use the",
+    "  host token generated at startup (its file path is logged as auth.hostTokenFile).",
+    "  OPENWORK_SERVER_V2_ALLOWED_HOSTS and OPENWORK_SERVER_V2_ALLOWED_ORIGINS (comma-separated)",
+    "  extend the accepted Host and browser Origin headers beyond the bound loopback address.",
+    "",
   ].join("\n"));
 }
 

@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { HTTPException } from "hono/http-exception";
 
 export type RequestActor = {
@@ -28,37 +29,60 @@ function readBearer(headers: Headers) {
   return match?.[1]?.trim() ?? "";
 }
 
-function trimToken(value: string | undefined) {
+function trimToken(value: string | null | undefined) {
   const trimmed = value?.trim() ?? "";
   return trimmed || null;
 }
 
+function tokensMatch(presented: string, expected: string | null) {
+  if (!expected || !presented) {
+    return false;
+  }
+
+  const left = Buffer.from(presented);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
 export type AuthService = ReturnType<typeof createAuthService>;
 
-export function createAuthService() {
+export type CreateAuthServiceOptions = {
+  clientToken?: string | null;
+  hostToken?: string | null;
+};
+
+export function createAuthService(options: CreateAuthServiceOptions = {}) {
   const clientToken = trimToken(
-    process.env.OPENWORK_SERVER_V2_CLIENT_TOKEN
+    options.clientToken
+      ?? process.env.OPENWORK_SERVER_V2_CLIENT_TOKEN
       ?? process.env.OPENWORK_CLIENT_TOKEN
       ?? process.env.OPENWORK_TOKEN,
   );
-  const hostToken = trimToken(
-    process.env.OPENWORK_SERVER_V2_HOST_TOKEN
+  const configuredHostToken = trimToken(
+    options.hostToken
+      ?? process.env.OPENWORK_SERVER_V2_HOST_TOKEN
       ?? process.env.OPENWORK_HOST_TOKEN,
   );
-  const required = Boolean(clientToken || hostToken);
+  // Authentication is never optional: without configured tokens, a random host
+  // token is minted so anonymous callers (including DNS-rebound browser pages)
+  // cannot reach any protected route.
+  const generatedHostToken = !clientToken && !configuredHostToken
+    ? randomBytes(32).toString("base64url")
+    : null;
+  const hostToken = configuredHostToken ?? generatedHostToken;
 
   function resolveActor(headers: Headers): RequestActor {
     const hostHeader = headers.get("x-openwork-host-token")?.trim() ?? "";
-    if (hostToken && hostHeader && hostHeader === hostToken) {
+    if (tokensMatch(hostHeader, hostToken)) {
       return { kind: "host" };
     }
 
     const bearer = readBearer(headers);
-    if (hostToken && bearer && bearer === hostToken) {
+    if (tokensMatch(bearer, hostToken)) {
       return { kind: "host" };
     }
 
-    if (clientToken && bearer && bearer === clientToken) {
+    if (tokensMatch(bearer, clientToken)) {
       return { kind: "client" };
     }
 
@@ -76,7 +100,7 @@ export function createAuthService() {
         authorization: "Authorization",
         hostToken: "X-OpenWork-Host-Token",
       },
-      required,
+      required: true,
       scopes: {
         hiddenWorkspaceReads: "host",
         serverInventory: "host",
@@ -86,10 +110,6 @@ export function createAuthService() {
   }
 
   function requireVisibleRead(actor: RequestActor) {
-    if (!required) {
-      return;
-    }
-
     if (actor.kind === "anonymous") {
       throw new HTTPException(401, {
         message: "A client or host token is required for this route.",
@@ -98,10 +118,6 @@ export function createAuthService() {
   }
 
   function requireHost(actor: RequestActor) {
-    if (!required) {
-      return;
-    }
-
     if (actor.kind === "anonymous") {
       throw new HTTPException(401, {
         message: "A host token is required for this route.",
@@ -116,6 +132,10 @@ export function createAuthService() {
   }
 
   return {
+    /** The host token minted at startup when none was configured, so the server can hand it to the local operator. */
+    getGeneratedHostToken() {
+      return generatedHostToken;
+    },
     getSummary,
     requireHost,
     requireVisibleRead,

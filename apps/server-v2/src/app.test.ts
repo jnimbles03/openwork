@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createApp } from "./app.js";
 import { createAppDependencies } from "./context/app-dependencies.js";
+import { authorizeRequests, TEST_HOST_TOKEN } from "./test-fixtures/authorized-app.js";
 
 afterEach(() => {
   delete process.env.OPENWORK_TOKEN;
@@ -14,6 +15,7 @@ function createTestApp(options?: { requireAuth?: boolean; seedRegistry?: boolean
   }
 
   const dependencies = createAppDependencies({
+    ...(options?.requireAuth ? {} : { auth: { hostToken: TEST_HOST_TOKEN } }),
     environment: "test",
     inMemory: true,
     legacy: {
@@ -50,8 +52,9 @@ function createTestApp(options?: { requireAuth?: boolean; seedRegistry?: boolean
     });
   }
 
+  const app = createApp({ dependencies });
   return {
-    app: createApp({ dependencies }),
+    app: options?.requireAuth ? app : authorizeRequests(app),
     dependencies,
   };
 }
@@ -180,7 +183,7 @@ test("system status reports registry summary and capabilities", async () => {
   });
   expect(body.data.capabilities.transport.v2).toBe(true);
   expect(body.data.capabilities.registry.remoteServerConnections).toBe(true);
-  expect(body.data.auth.required).toBe(false);
+  expect(body.data.auth.required).toBe(true);
 });
 
 test("workspace list excludes hidden workspaces by default", async () => {
