@@ -1,5 +1,6 @@
 import type { Context, Hono } from "hono";
 import { describeRoute } from "hono-openapi";
+import { HTTPException } from "hono/http-exception";
 import { getRequestContext, type AppBindings } from "../context/request-context.js";
 import { buildSuccessResponse, RouteError } from "../http.js";
 import { jsonResponse, withCommonErrorResponses } from "../openapi.js";
@@ -43,8 +44,12 @@ import {
 } from "../schemas/managed.js";
 import { routePaths } from "./route-paths.js";
 
-function parseJsonBody<T>(schema: { parse(input: unknown): T }, request: Request) {
-  return request.json().then((body) => schema.parse(body));
+async function parseJsonBody<T>(schema: { parse(input: unknown): T }, request: Request) {
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new HTTPException(415, { message: "Request body must be application/json." });
+  }
+  return schema.parse(await request.json());
 }
 
 function requireVisible(c: Context<AppBindings>) {
