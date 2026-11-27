@@ -6,6 +6,7 @@ import { requestContextMiddleware } from "./context/request-context.js";
 import { buildErrorResponse } from "./http.js";
 import { errorHandlingMiddleware } from "./middleware/error-handler.js";
 import { requestLoggerMiddleware } from "./middleware/request-logger.js";
+import { authenticationGateMiddleware, hostOriginGuardMiddleware } from "./middleware/request-guard.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { responseFinalizerMiddleware } from "./middleware/response-finalizer.js";
 import { registerRoutes } from "./routes/index.js";
@@ -23,6 +24,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use("*", responseFinalizerMiddleware);
   app.use("*", requestLoggerMiddleware);
   app.use("*", errorHandlingMiddleware);
+  app.use("*", authenticationGateMiddleware);
+  app.use("*", hostOriginGuardMiddleware);
 
   registerRoutes(app, dependencies);
 

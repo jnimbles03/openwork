@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { createApp } from "./app.js";
 import { createAppDependencies } from "./context/app-dependencies.js";
+import { authorizeRequests, TEST_HOST_TOKEN } from "./test-fixtures/authorized-app.js";
 
 const tempRoots: string[] = [];
 
@@ -24,6 +25,7 @@ function createTempRoot(label: string) {
 function createTestApp() {
   const root = createTempRoot("openwork-server-v2-phase7");
   const dependencies = createAppDependencies({
+    auth: { hostToken: TEST_HOST_TOKEN },
     environment: "test",
     inMemory: true,
     runtime: {
@@ -35,7 +37,7 @@ function createTestApp() {
   });
 
   return {
-    app: createApp({ dependencies }),
+    app: authorizeRequests(createApp({ dependencies })),
     dependencies,
     root,
   };

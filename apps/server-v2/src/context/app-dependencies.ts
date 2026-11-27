@@ -1,5 +1,6 @@
-import { createAuthService, type AuthService } from "../services/auth-service.js";
+import { createAuthService, type AuthService, type CreateAuthServiceOptions } from "../services/auth-service.js";
 import { createCapabilitiesService, type CapabilitiesService } from "../services/capabilities-service.js";
+import { createHostPolicyService, type HostPolicyService } from "../services/host-policy-service.js";
 import { createConfigMaterializationService, type ConfigMaterializationService } from "../services/config-materialization-service.js";
 import { createManagedResourceService, type ManagedResourceService } from "../services/managed-resource-service.js";
 import { createProcessInfoAdapter, type ProcessInfoAdapter } from "../adapters/process-info.js";
@@ -27,6 +28,7 @@ export type AppDependencies = {
       capabilities: CapabilitiesService;
       config: ConfigMaterializationService;
       files: WorkspaceFileService;
+      hostPolicy: HostPolicyService;
       managed: ManagedResourceService;
       registry: RegistryService;
       remoteServers: RemoteServerService;
@@ -43,6 +45,7 @@ export type AppDependencies = {
 };
 
 type CreateAppDependenciesOverrides = Partial<Omit<AppDependencies, "services" | "close" | "database" | "persistence">> & {
+  auth?: CreateAuthServiceOptions;
   inMemory?: boolean;
   legacy?: {
     cloudSigninJson?: string;
@@ -111,7 +114,7 @@ export function createAppDependencies(overrides: CreateAppDependenciesOverrides 
     workingDirectory: overrides.workingDirectory,
   });
   const database = createSqliteDatabaseStatusProvider({ diagnostics: persistence.diagnostics });
-  const auth = createAuthService();
+  const auth = createAuthService(overrides.auth);
   const serverRegistry = createServerRegistryService({
     localServerId: persistence.registry.localServerId,
     repositories: persistence.repositories,
@@ -175,6 +178,7 @@ export function createAppDependencies(overrides: CreateAppDependenciesOverrides 
       capabilities,
       config,
       files,
+      hostPolicy: createHostPolicyService(),
       managed,
       registry: persistence.registry,
       remoteServers,

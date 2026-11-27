@@ -100,6 +100,8 @@ export function createSystemService(input: {
             "response-finalizer",
             "request-logger",
             "error-handler",
+            "authentication-gate",
+            "host-origin-guard",
           ],
           routeNamespaces: {
             ...routeNamespaces,

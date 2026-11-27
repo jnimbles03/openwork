@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createApp } from "./app.js";
 import { createAppDependencies } from "./context/app-dependencies.js";
+import { authorizeRequests, TEST_HOST_TOKEN } from "./test-fixtures/authorized-app.js";
 
 const tempRoots: string[] = [];
 const envBackup = {
@@ -34,6 +35,7 @@ function createTempRoot(label: string) {
 function createTestApp(label: string) {
   const root = createTempRoot(label);
   const dependencies = createAppDependencies({
+    auth: { hostToken: TEST_HOST_TOKEN },
     environment: "test",
     inMemory: true,
     runtime: {
@@ -44,7 +46,7 @@ function createTestApp(label: string) {
     workingDirectory: path.join(root, "server-v2"),
   });
   return {
-    app: createApp({ dependencies }),
+    app: authorizeRequests(createApp({ dependencies })),
     dependencies,
     root,
   };

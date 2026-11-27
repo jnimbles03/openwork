@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { createApp } from "../app.js";
 import { createAppDependencies, type AppDependencies } from "../context/app-dependencies.js";
 import { resolveServerV2Version } from "../version.js";
@@ -31,6 +33,21 @@ function resolvePort(value: number | undefined) {
   return value;
 }
 
+function writeGeneratedHostToken(dependencies: AppDependencies) {
+  const token = dependencies.services.auth.getGeneratedHostToken();
+  if (!token) {
+    return null;
+  }
+
+  const directory = dependencies.persistence.workingDirectory.databaseDir;
+  const file = path.join(directory, "host-token");
+  fs.mkdirSync(directory, { mode: 0o700, recursive: true });
+  // Recreate exclusively so the token never lands in a pre-existing file (or symlink) with looser permissions.
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, `${token}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  return file;
+}
+
 export function startServer(options: StartServerOptions = {}): StartedServer {
   const host = options.host ?? process.env.OPENWORK_SERVER_V2_HOST ?? "127.0.0.1";
   const port = resolvePort(options.port ?? Number.parseInt(process.env.OPENWORK_SERVER_V2_PORT ?? "3100", 10));
@@ -51,7 +68,9 @@ export function startServer(options: StartServerOptions = {}): StartedServer {
   });
   const url = server.url.toString();
   const resolvedPort = new URL(url).port;
+  dependencies.services.hostPolicy.attachBoundAddress({ hostname: host, port: Number(resolvedPort || port) });
   dependencies.services.registry.attachLocalServerBaseUrl(url);
+  const hostTokenFile = writeGeneratedHostToken(dependencies);
   if (dependencies.services.runtime.getBootstrapPolicy() === "eager") {
     void dependencies.services.runtime.bootstrap().catch(() => undefined);
   }
@@ -59,6 +78,7 @@ export function startServer(options: StartServerOptions = {}): StartedServer {
   if (!options.silent) {
     console.info(
       JSON.stringify({
+        ...(hostTokenFile ? { auth: { hostTokenFile } } : {}),
         bootstrap: dependencies.database.getStartupDiagnostics(),
         host,
         port: Number(resolvedPort || port),

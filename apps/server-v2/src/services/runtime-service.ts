@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -75,6 +76,8 @@ export type RuntimeService = {
   bootstrap(): Promise<void>;
   dispose(): Promise<void>;
   getBootstrapPolicy(): RuntimeBootstrapPolicy;
+  /** Credentials the spawned OpenCode runtime requires on every request. */
+  getOpencodeRequestHeaders(): Record<string, string>;
   getOpencodeHealth(): {
     baseUrl: string | null;
     binaryPath: string | null;
@@ -438,6 +441,13 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
   let bootstrapPromise: Promise<void> | null = null;
   let shuttingDown = false;
   let opencodeHandle: LocalOpencodeHandle | null = null;
+  // The OpenCode runtime listens on loopback and can run shell commands, so it
+  // only accepts this server's per-process Basic credentials.
+  const opencodeCredentialsEnv = {
+    OPENCODE_SERVER_PASSWORD: randomBytes(32).toString("base64url"),
+    OPENCODE_SERVER_USERNAME: "openwork",
+  };
+  const opencodeAuthorization = `Basic ${Buffer.from(`${opencodeCredentialsEnv.OPENCODE_SERVER_USERNAME}:${opencodeCredentialsEnv.OPENCODE_SERVER_PASSWORD}`, "utf8").toString("base64")}`;
   let routerHandle: ManagedProcessHandle | null = null;
   let opencodeStopping = false;
   let routerStopping = false;
@@ -766,6 +776,7 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
         {
           cwd: options.workingDirectory.rootDir,
           env: {
+            ...opencodeCredentialsEnv,
             OPENCODE_DIRECTORY: options.workingDirectory.rootDir,
             OPENCODE_ROUTER_CONFIG_PATH: routerMaterialization?.configPath,
             OPENCODE_ROUTER_DATA_DIR: routerMaterialization?.dataDir,
@@ -853,11 +864,13 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
       binary: bundle.opencode.absolutePath,
       client: {
         directory: options.workingDirectory.rootDir,
+        headers: { Authorization: opencodeAuthorization },
         responseStyle: "data",
         throwOnError: true,
       },
       config: {},
       cwd: options.workingDirectory.rootDir,
+      env: opencodeCredentialsEnv,
       hostname: process.env.OPENWORK_SERVER_V2_OPENCODE_HOST?.trim() || "127.0.0.1",
       port: configuredPort > 0 ? configuredPort : await getFreePort(),
       timeout: Number.parseInt(process.env.OPENWORK_SERVER_V2_OPENCODE_START_TIMEOUT_MS ?? "10000", 10) || 10_000,
@@ -1019,6 +1032,10 @@ export function createRuntimeService(options: CreateRuntimeServiceOptions): Runt
 
     getBootstrapPolicy() {
       return bootstrapPolicy;
+    },
+
+    getOpencodeRequestHeaders(): Record<string, string> {
+      return { Authorization: opencodeAuthorization };
     },
 
     getOpencodeHealth() {

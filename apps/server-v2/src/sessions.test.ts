@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createApp } from "./app.js";
 import { createAppDependencies } from "./context/app-dependencies.js";
+import { authorizeRequests, TEST_HOST_TOKEN } from "./test-fixtures/authorized-app.js";
 
 type Served = {
   port: number;
@@ -17,6 +18,7 @@ afterEach(async () => {
 
 function createTestApp() {
   const dependencies = createAppDependencies({
+    auth: { hostToken: TEST_HOST_TOKEN },
     environment: "test",
     inMemory: true,
     legacy: {
@@ -31,7 +33,7 @@ function createTestApp() {
   });
 
   return {
-    app: createApp({ dependencies }),
+    app: authorizeRequests(createApp({ dependencies })),
     dependencies,
   };
 }

@@ -142,6 +142,9 @@ export function registerFileRoutes(app: Hono<AppBindings>) {
     async (c) => {
       const { requestContext } = readActorKey(c);
       const workspaceId = c.req.param("workspaceId") ?? "";
+      if (!(c.req.header("content-type")?.toLowerCase() ?? "").includes("application/json")) {
+        throw new HTTPException(415, { message: "Request body must be application/json." });
+      }
       const body = await c.req.json();
       const displayName = typeof body?.displayName === "string" ? body.displayName : null;
       requestContext.services.auth.requireVisibleRead(requestContext.actor);
